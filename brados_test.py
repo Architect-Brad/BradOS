@@ -483,11 +483,12 @@ class TestShellImports:
 
     def test_apps_manifest(self):
         from brados_shell import APPS
-        assert len(APPS) == 14
+        assert len(APPS) == 17
         ids = {a["id"] for a in APPS}
         for required in ["terminal", "browser", "files", "editor", "mail",
                          "notes", "calculator", "clock", "monitor", "logs",
-                         "kernel", "settings", "bradsec", "bpkg"]:
+                         "kernel", "settings", "bradsec", "bpkg",
+                         "paint", "converter", "rss"]:
             assert required in ids
 
     def test_splash_screen(self):

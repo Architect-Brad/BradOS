@@ -33,7 +33,7 @@ from textual.containers import Container, Horizontal, ScrollableContainer, Verti
 from textual.reactive import reactive
 from textual.binding import Binding
 from textual import on, work
-from textual.events import Key
+from textual.events import Click, Key
 from textual.css.query import NoMatches
 from textual.message import Message
 
@@ -898,6 +898,10 @@ APPS = [
     # Row 4 — security & packages
     {"id": "bradsec",    "icon": "⊛",  "name": "BradSec",    "desc": "Security"},
     {"id": "bpkg",       "icon": "⬡",  "name": "bpkg",       "desc": "Packages"},
+    # Row 5 — creative & tools
+    {"id": "paint",      "icon": "🎨",  "name": "Paint",     "desc": "Pixel editor"},
+    {"id": "converter",  "icon": "⇄",  "name": "Converter",  "desc": "Unit converter"},
+    {"id": "rss",        "icon": "◉",  "name": "RSS Reader", "desc": "Feed reader"},
 ]
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -1296,6 +1300,9 @@ class DesktopScreen(Screen):
             "settings":   SettingsWindow,
             "bradsec":    BradSecWindow,
             "bpkg":       BpkgWindow,
+            "paint":      PaintWindow,
+            "converter":  ConverterWindow,
+            "rss":        RssWindow,
         }
         cls = screen_map.get(app_id)
         if not cls:
@@ -4046,6 +4053,403 @@ class BpkgWindow(BradWindow):
         q = self.query_one("#pkg-search-input", Input).value.strip()
         self._view = "search"
         self._load_view(self._mgr.search(q) if q else None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAINT WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class PaintWindow(BradWindow):
+    APP_ID: ClassVar[str] = "paint"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _pixels: list[list[Static]] = []
+    _color: str = "#00d4ff"
+
+    _PALETTE = [
+        "#00d4ff", "#ff4757", "#2ed573", "#ffa502",
+        "#a855f7", "#ecf0f1", "#7f8c8d", "#060d17",
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("🎨  Paint", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Horizontal():
+            with Vertical(id="paint-palette"):
+                yield Static("[bold #7f8c8d]Colors[/]", classes="panel-heading")
+                for i in range(len(self._PALETTE)):
+                    yield Button("  ", id=f"pal-{i}")
+                yield Static("")
+                yield Button("Clear", id="pal-clear", classes="btn-danger")
+            with Vertical(id="paint-canvas"):
+                for row in range(14):
+                    with Horizontal(classes="pixel-row"):
+                        for col in range(20):
+                            yield Static(" ", classes="pixel", id=f"px-{row}-{col}")
+
+    def on_mount(self) -> None:
+        for i, color in enumerate(self._PALETTE):
+            try:
+                self.query_one(f"#pal-{i}", Button).styles.background = color
+            except NoMatches:
+                pass
+        self._pixels = []
+        for row in range(14):
+            row_px = []
+            for col in range(20):
+                w = self.query_one(f"#px-{row}-{col}", Static)
+                w.styles.background = "#060d17"
+                w.styles.width = 1
+                row_px.append(w)
+            self._pixels.append(row_px)
+
+    @on(Click, ".pixel")
+    def _on_pixel_click(self, event: Click) -> None:
+        if isinstance(event.widget, Static):
+            event.widget.styles.background = self._color
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss(); return
+        if bid == "pal-clear":
+            for row in self._pixels:
+                for px in row:
+                    px.styles.background = "#060d17"
+            return
+        if bid and bid.startswith("pal-"):
+            idx = int(bid[4:])
+            if 0 <= idx < len(self._PALETTE):
+                self._color = self._PALETTE[idx]
+            return
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONVERTER WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ConverterWindow(BradWindow):
+    APP_ID: ClassVar[str] = "converter"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _category: str = "length"
+    _from_unit: str = "m"
+    _to_unit: str = "km"
+
+    _CATEGORIES = {
+        "length": ["mm", "cm", "m", "km", "in", "ft", "yd", "mi"],
+        "weight": ["mg", "g", "kg", "oz", "lb"],
+        "temperature": ["celsius", "fahrenheit", "kelvin"],
+        "data": ["B", "KB", "MB", "GB", "TB"],
+    }
+
+    _UNIT_DISPLAY = {
+        "mm": "mm", "cm": "cm", "m": "m", "km": "km",
+        "in": "in", "ft": "ft", "yd": "yd", "mi": "mi",
+        "mg": "mg", "g": "g", "kg": "kg", "oz": "oz", "lb": "lb",
+        "celsius": "°C", "fahrenheit": "°F", "kelvin": "K",
+        "B": "B", "KB": "KB", "MB": "MB", "GB": "GB", "TB": "TB",
+    }
+
+    _UNIT_TO_BASE = {
+        "mm": 0.001, "cm": 0.01, "m": 1, "km": 1000,
+        "in": 0.0254, "ft": 0.3048, "yd": 0.9144, "mi": 1609.344,
+        "mg": 0.001, "g": 1, "kg": 1000, "oz": 28.3495, "lb": 453.592,
+        "B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4,
+    }
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("⇄  Converter", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            with Horizontal(id="conv-cats"):
+                for i, cat in enumerate(["length", "weight", "temperature", "data"]):
+                    yield Button(cat.capitalize(), id=f"cat-{cat}",
+                                 classes="folder-btn" + (" active" if i == 0 else ""))
+            with Horizontal(id="conv-input-row"):
+                yield Input(value="1", id="conv-value")
+                yield Button("⇄", id="conv-swap", classes="btn-primary")
+                yield Static("", id="conv-result")
+            with Horizontal(id="conv-units-row"):
+                with Vertical(id="conv-from"):
+                    yield Static("[bold #7f8c8d]From[/]", classes="panel-heading")
+                    for units in self._CATEGORIES.values():
+                        for unit in units:
+                            yield Button(
+                                self._UNIT_DISPLAY.get(unit, unit),
+                                id=f"from-{unit}", classes="folder-btn")
+                with Vertical(id="conv-to"):
+                    yield Static("[bold #7f8c8d]To[/]", classes="panel-heading")
+                    for units in self._CATEGORIES.values():
+                        for unit in units:
+                            yield Button(
+                                self._UNIT_DISPLAY.get(unit, unit),
+                                id=f"to-{unit}", classes="folder-btn")
+
+    def on_mount(self) -> None:
+        self._rebuild_visibility()
+        self._convert()
+
+    def _rebuild_visibility(self) -> None:
+        for cat, units in self._CATEGORIES.items():
+            show = cat == self._category
+            for unit in units:
+                try:
+                    b = self.query_one(f"#from-{unit}", Button)
+                    b.display = show
+                    if unit == self._from_unit:
+                        b.add_class("active")
+                    else:
+                        b.remove_class("active")
+                except NoMatches:
+                    pass
+                try:
+                    b = self.query_one(f"#to-{unit}", Button)
+                    b.display = show
+                    if unit == self._to_unit:
+                        b.add_class("active")
+                    else:
+                        b.remove_class("active")
+                except NoMatches:
+                    pass
+        for cat in self._CATEGORIES:
+            try:
+                b = self.query_one(f"#cat-{cat}", Button)
+                if cat == self._category:
+                    b.add_class("active")
+                else:
+                    b.remove_class("active")
+            except NoMatches:
+                pass
+
+    def _convert(self) -> None:
+        try:
+            val = float(self.query_one("#conv-value", Input).value or "0")
+        except ValueError:
+            self.query_one("#conv-result", Static).update("[#ff4757]Invalid[/]")
+            return
+        try:
+            res = self._compute(val, self._from_unit, self._to_unit)
+            rs = f"{res:.10g}"
+            display_unit = self._UNIT_DISPLAY.get(self._to_unit, self._to_unit)
+            self.query_one("#conv-result", Static).update(
+                f"[bold #2ed573]{rs} {display_unit}[/]")
+        except Exception:
+            self.query_one("#conv-result", Static).update("[#ff4757]Error[/]")
+
+    def _compute(self, val: float, fu: str, tu: str) -> float:
+        if fu in ("celsius", "fahrenheit", "kelvin"):
+            if fu == "celsius":
+                c = val
+            elif fu == "fahrenheit":
+                c = (val - 32) * 5 / 9
+            else:
+                c = val - 273.15
+            if tu == "celsius":
+                return c
+            elif tu == "fahrenheit":
+                return c * 9 / 5 + 32
+            else:
+                return c + 273.15
+        base = val * self._UNIT_TO_BASE[fu]
+        return base / self._UNIT_TO_BASE[tu]
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss(); return
+        if bid == "conv-swap":
+            self._from_unit, self._to_unit = self._to_unit, self._from_unit
+            self._rebuild_visibility()
+            self._convert()
+            return
+        if bid and bid.startswith("cat-"):
+            cat = bid[4:]
+            if cat in self._CATEGORIES:
+                self._category = cat
+                units = self._CATEGORIES[cat]
+                self._from_unit = units[0]
+                self._to_unit = units[1] if len(units) > 1 else units[0]
+                self._rebuild_visibility()
+                self._convert()
+            return
+        if bid and bid.startswith("from-"):
+            self._from_unit = bid[5:]
+            self._rebuild_visibility()
+            self._convert()
+            return
+        if bid and bid.startswith("to-"):
+            self._to_unit = bid[3:]
+            self._rebuild_visibility()
+            self._convert()
+            return
+
+    @on(Input.Submitted, "#conv-value")
+    def _on_conv_enter(self) -> None:
+        self._convert()
+
+    @on(Input.Changed, "#conv-value")
+    def _on_conv_change(self) -> None:
+        self._convert()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RSS FEED READER WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RssWindow(BradWindow):
+    APP_ID: ClassVar[str] = "rss"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _items: list[dict] = []
+    _feed_url: str = ""
+
+    _CLEANR = re.compile(r"<[^>]+>")
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("◉  RSS Reader", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            with Horizontal(id="browser-nav"):
+                yield Input(placeholder="Feed URL…", id="rss-url")
+                yield Button("Fetch", id="rss-fetch", classes="btn-primary")
+            with Horizontal():
+                with Vertical(id="mail-mid"):
+                    yield DataTable(id="rss-table", cursor_type="row")
+                with Vertical(id="mail-right"):
+                    yield Static("[#7f8c8d]Select an item.[/]", id="rss-detail")
+                    yield Button("Open in Browser", id="rss-open", classes="btn-success")
+
+    def on_mount(self) -> None:
+        t = self.query_one("#rss-table", DataTable)
+        t.add_columns("Title", "Date")
+
+    def _extract_tag(self, tag: str, text: str) -> str:
+        m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.IGNORECASE | re.DOTALL)
+        if m:
+            content = m.group(1)
+            cdata = re.search(r"<!\[CDATA\[(.*?)\]\]>", content, re.DOTALL)
+            if cdata:
+                return cdata.group(1).strip()
+            return content.strip()
+        return ""
+
+    def _clean_html(self, html: str) -> str:
+        return self._CLEANR.sub("", html).strip()
+
+    def _fmt_date(self, raw: str) -> str:
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(raw)
+            return dt.strftime("%d %b %Y")
+        except Exception:
+            return raw[:16] if raw else ""
+
+    def _fetch_feed(self, url: str) -> list[dict]:
+        try:
+            import requests
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            text = resp.text
+        except ImportError:
+            self.notify("Install requests: pip install requests", severity="error")
+            return []
+        except Exception as e:
+            self.notify(f"Fetch failed: {e}", severity="error")
+            return []
+        items = []
+        for item_match in re.finditer(
+            r"<item>(.*?)</item>", text, re.IGNORECASE | re.DOTALL,
+        ):
+            raw = item_match.group(1)
+            title = self._extract_tag("title", raw)
+            link = self._extract_tag("link", raw)
+            desc = self._clean_html(self._extract_tag("description", raw))
+            pubdate = self._extract_tag("pubDate", raw)
+            items.append({
+                "title": title, "link": link,
+                "description": desc, "pubdate": pubdate,
+            })
+        return items
+
+    def _populate_table(self, items: list[dict]) -> None:
+        t = self.query_one("#rss-table", DataTable)
+        t.clear()
+        for item in items:
+            title = item.get("title", "")[:60]
+            pubdate = self._fmt_date(item.get("pubdate", ""))
+            t.add_row(title, pubdate)
+
+    def _get_selected_url(self) -> str | None:
+        try:
+            t = self.query_one("#rss-table", DataTable)
+            row = t.cursor_row
+            title = str(t.get_cell_at(row, 0))
+            for item in self._items:
+                if item.get("title", "")[:60] == title:
+                    return item.get("link", "")
+        except Exception:
+            pass
+        return None
+
+    @on(DataTable.RowHighlighted, "#rss-table")
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        try:
+            title = str(self.query_one("#rss-table", DataTable).get_cell_at(
+                event.cursor_row, 0))
+            for item in self._items:
+                if item.get("title", "")[:60] == title:
+                    desc = item.get("description", "")
+                    self.query_one("#rss-detail", Static).update(
+                        f"[#7f8c8d]{desc[:500]}[/]")
+                    return
+        except Exception:
+            pass
+
+    def _nav_browser(self, url: str) -> None:
+        try:
+            inp = self.app.screen.query_one("#browser-url", Input)
+            inp.value = url
+            if hasattr(self.app.screen, "_navigate"):
+                self.app.screen._navigate()
+        except Exception:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss(); return
+        if bid == "rss-fetch":
+            url = self.query_one("#rss-url", Input).value.strip()
+            if url:
+                self._feed_url = url
+                items = self._fetch_feed(url)
+                self._items = items
+                self._populate_table(items)
+                self.notify(f"Loaded {len(items)} items.", severity="information")
+            return
+        if bid == "rss-open":
+            url = self._get_selected_url()
+            if url:
+                self.app.push_screen(BrowserWindow())
+                self.set_timer(0.05, lambda: self._nav_browser(url))
+            return
+
+    @on(Input.Submitted, "#rss-url")
+    def _on_url_enter(self) -> None:
+        url = self.query_one("#rss-url", Input).value.strip()
+        if url:
+            self._feed_url = url
+            items = self._fetch_feed(url)
+            self._items = items
+            self._populate_table(items)
+            self.notify(f"Loaded {len(items)} items.", severity="information")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
