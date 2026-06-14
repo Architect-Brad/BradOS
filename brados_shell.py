@@ -19,6 +19,10 @@ import json
 import shutil
 import threading
 import platform
+import random
+import string
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from typing import ClassVar
 
@@ -902,6 +906,10 @@ APPS = [
     {"id": "paint",      "icon": "🎨",  "name": "Paint",     "desc": "Pixel editor"},
     {"id": "converter",  "icon": "⇄",  "name": "Converter",  "desc": "Unit converter"},
     {"id": "rss",        "icon": "◉",  "name": "RSS Reader", "desc": "Feed reader"},
+    # Row 6 — new apps
+    {"id": "snake",      "icon": "🐍",  "name": "Snake Game", "desc": "Classic snake"},
+    {"id": "vault",      "icon": "🔐",  "name": "Vault",      "desc": "Password manager"},
+    {"id": "weather",    "icon": "🌤",  "name": "Weather",    "desc": "Forecast"},
 ]
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -1303,6 +1311,9 @@ class DesktopScreen(Screen):
             "paint":      PaintWindow,
             "converter":  ConverterWindow,
             "rss":        RssWindow,
+            "snake":      SnakeWindow,
+            "vault":      VaultWindow,
+            "weather":    WeatherWindow,
         }
         cls = screen_map.get(app_id)
         if not cls:
@@ -4451,6 +4462,336 @@ class RssWindow(BradWindow):
             self._populate_table(items)
             self.notify(f"Loaded {len(items)} items.", severity="information")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SNAKE GAME WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SnakeWindow(BradWindow):
+    APP_ID: ClassVar[str] = "snake"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _GRID = 20
+    _snake: list[tuple[int, int]] = []
+    _food: tuple[int, int] = (0, 0)
+    _dir: tuple[int, int] = (0, 1)
+    _next_dir: tuple[int, int] = (0, 1)
+    _score: int = 0
+    _game_over: bool = False
+    _running: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("🐍  Snake Game", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            yield Static(f"[bold #00d4ff]Score: 0[/]", id="snake-score")
+            yield Static("", id="snake-grid")
+
+    def on_mount(self) -> None:
+        self._start_game()
+
+    def _start_game(self) -> None:
+        center = self._GRID // 2
+        self._snake = [(center, center), (center, center - 1), (center, center - 2)]
+        self._dir = (0, 1)
+        self._next_dir = (0, 1)
+        self._score = 0
+        self._game_over = False
+        self._running = True
+        self._spawn_food()
+        self._render()
+        self.set_interval(0.2, self._tick)
+
+    def _spawn_food(self) -> None:
+        occupied = set(self._snake)
+        free = [(r, c) for r in range(self._GRID) for c in range(self._GRID) if (r, c) not in occupied]
+        if free:
+            self._food = random.choice(free)
+
+    def _tick(self) -> None:
+        if not self._running or self._game_over:
+            return
+        self._dir = self._next_dir
+        head = self._snake[0]
+        dr, dc = self._dir
+        nh = (head[0] + dr, head[1] + dc)
+        if (nh[0] < 0 or nh[0] >= self._GRID or nh[1] < 0 or nh[1] >= self._GRID
+                or nh in self._snake[:-1]):
+            self._game_over = True
+            self._running = False
+            self._render()
+            return
+        self._snake.insert(0, nh)
+        if nh == self._food:
+            self._score += 10
+            self._spawn_food()
+        else:
+            self._snake.pop()
+        self._render()
+
+    def _render(self) -> None:
+        s = set(self._snake)
+        head = self._snake[0] if self._snake else None
+        lines = []
+        for r in range(self._GRID):
+            row = ""
+            for c in range(self._GRID):
+                if (r, c) == self._food:
+                    row += "[#ff4757]●[/]"
+                elif (r, c) == head:
+                    row += "[#00d4ff]█[/]"
+                elif (r, c) in s:
+                    row += "[#2ed573]█[/]"
+                else:
+                    row += " "
+            lines.append(row)
+        grid = "\n".join(lines)
+        if self._game_over:
+            grid += f"\n\n[bold #ff4757]  GAME OVER — Score: {self._score}[/]\n  [bold #7f8c8d]SPACE to restart[/]"
+        self.query_one("#snake-grid", Static).update(grid)
+        self.query_one("#snake-score", Static).update(f"[bold #00d4ff]Score: {self._score}[/]")
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "space" and self._game_over:
+            self._start_game()
+            return
+        if not self._running:
+            return
+        opposite = {(0, 1): (0, -1), (0, -1): (0, 1), (1, 0): (-1, 0), (-1, 0): (1, 0)}
+        new_dir = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(event.key)
+        if new_dir and new_dir != opposite.get(self._dir):
+            self._next_dir = new_dir
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-close":
+            self.dismiss()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PASSWORD VAULT WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class VaultWindow(BradWindow):
+    APP_ID: ClassVar[str] = "vault"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _entries: list[dict] = []
+    _selected_idx: int = -1
+    _unlocked: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("🔐  Vault", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Horizontal():
+            with Vertical(id="mail-left"):
+                yield Static("[bold #7f8c8d]Entries[/]", classes="panel-heading")
+                yield ListView(id="vault-list")
+            with Vertical(id="mail-right"):
+                yield Static("[bold #7f8c8d]Details[/]", classes="panel-heading")
+                yield Static("", id="vault-unlock")
+                yield Input(placeholder="Service", id="vault-service")
+                yield Input(placeholder="Username", id="vault-user")
+                yield Input(placeholder="Password", id="vault-pass", password=True)
+                yield Input(placeholder="URL", id="vault-url")
+                yield Input(placeholder="Notes", id="vault-notes")
+                with Horizontal(id="editor-actions"):
+                    yield Button("Add", id="vault-add", classes="btn-primary")
+                    yield Button("Save", id="vault-save", classes="btn-success")
+                    yield Button("Delete", id="vault-del", classes="btn-danger")
+                    yield Button("Gen PW", id="vault-gen", classes="folder-btn")
+
+    def on_mount(self) -> None:
+        self._unlock_view()
+
+    def _unlock_view(self) -> None:
+        self._unlocked = False
+        self.query_one("#vault-unlock", Static).update("[bold #ffa502]Vault is locked.[/]\nEnter master password to unlock:")
+        self.query_one("#vault-service", Input).disabled = True
+        self.query_one("#vault-user", Input).disabled = True
+        self.query_one("#vault-pass", Input).disabled = True
+        self.query_one("#vault-url", Input).disabled = True
+        self.query_one("#vault-notes", Input).disabled = True
+
+    def _unlock(self, pw: str) -> None:
+        sec = self.app.security
+        if sec is None:
+            self.notify("Security module not available.", severity="error")
+            return
+        if not sec.unlock_vault(pw):
+            self.notify("Wrong master password.", severity="error")
+            return
+        self._unlocked = True
+        self.query_one("#vault-unlock", Static).update("[bold #2ed573]Vault unlocked[/]")
+        for widget_id in ("vault-service", "vault-user", "vault-pass", "vault-url", "vault-notes"):
+            self.query_one(f"#{widget_id}", Input).disabled = False
+        self._load_entries()
+
+    def _load_entries(self) -> None:
+        sec = self.app.security
+        if sec is None:
+            return
+        raw = sec.vault.get("vault_entries")
+        self._entries = raw if isinstance(raw, list) else []
+        self._refresh_list()
+
+    def _save_entries(self) -> None:
+        sec = self.app.security
+        if sec is None:
+            return
+        sec.vault.put("vault_entries", self._entries)
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        lv = self.query_one("#vault-list", ListView)
+        lv.clear()
+        for i, entry in enumerate(self._entries):
+            service = entry.get("service", "?") or "?"
+            lv.append(ListItem(Static(service), id=f"vault-item-{i}"))
+
+    @on(ListView.Selected, "#vault-list")
+    def _on_select(self, event: ListView.Selected) -> None:
+        if not event.item or not event.item.id:
+            return
+        idx = int(event.item.id.split("-")[-1])
+        self._selected_idx = idx
+        entry = self._entries[idx] if 0 <= idx < len(self._entries) else {}
+        self.query_one("#vault-service", Input).value = entry.get("service", "")
+        self.query_one("#vault-user", Input).value = entry.get("username", "")
+        self.query_one("#vault-pass", Input).value = entry.get("password", "")
+        self.query_one("#vault-url", Input).value = entry.get("url", "")
+        self.query_one("#vault-notes", Input).value = entry.get("notes", "")
+
+    def _gen_password(self) -> str:
+        chars = string.ascii_letters + string.digits
+        return "".join(random.choice(chars) for _ in range(16))
+
+    def _get_current_entry(self) -> dict:
+        return {
+            "service": self.query_one("#vault-service", Input).value.strip(),
+            "username": self.query_one("#vault-user", Input).value.strip(),
+            "password": self.query_one("#vault-pass", Input).value.strip(),
+            "url": self.query_one("#vault-url", Input).value.strip(),
+            "notes": self.query_one("#vault-notes", Input).value.strip(),
+        }
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss(); return
+        if not self._unlocked:
+            return
+        if bid == "vault-add":
+            entry = self._get_current_entry()
+            if not entry["service"]:
+                self.notify("Service name required.", severity="warning")
+                return
+            self._entries.append(entry)
+            self._save_entries()
+            self.notify("Entry added.", severity="information")
+        elif bid == "vault-save":
+            if self._selected_idx < 0 or self._selected_idx >= len(self._entries):
+                self.notify("Select an entry first.", severity="warning")
+                return
+            self._entries[self._selected_idx] = self._get_current_entry()
+            self._save_entries()
+            self.notify("Entry saved.", severity="information")
+        elif bid == "vault-del":
+            if self._selected_idx < 0 or self._selected_idx >= len(self._entries):
+                self.notify("Select an entry first.", severity="warning")
+                return
+            self._entries.pop(self._selected_idx)
+            self._selected_idx = -1
+            self._save_entries()
+            self.notify("Entry deleted.", severity="information")
+        elif bid == "vault-gen":
+            pw = self._gen_password()
+            self.query_one("#vault-pass", Input).value = pw
+
+    @on(Input.Submitted, "#vault-unlock")
+    def _on_unlock_submit(self, event: Input.Submitted) -> None:
+        self._unlock(event.value.strip())
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEATHER WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class WeatherWindow(BradWindow):
+    APP_ID: ClassVar[str] = "weather"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _last: dict | None = None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("🌤  Weather", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            with Horizontal(id="browser-nav"):
+                yield Input(placeholder="City name…", id="weather-city")
+                yield Button("Get Weather", id="weather-fetch", classes="btn-primary")
+            yield Static("", id="weather-display")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss(); return
+        if bid == "weather-fetch":
+            self._fetch()
+
+    @on(Input.Submitted, "#weather-city")
+    def _on_enter(self) -> None:
+        self._fetch()
+
+    @work(thread=True)
+    def _fetch(self) -> None:
+        city = self.query_one("#weather-city", Input).value.strip()
+        if not city:
+            self.notify("Enter a city name.", severity="warning")
+            return
+        try:
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            if "current_condition" not in data or not data["current_condition"]:
+                self.app.call_from_thread(self._show_error, "City not found.")
+                return
+            self._last = data
+            self.app.call_from_thread(self._display, data)
+        except Exception as e:
+            self.app.call_from_thread(self._show_error, f"Error: {e}")
+
+    def _display(self, data: dict) -> None:
+        cc = data["current_condition"][0]
+        city_name = data.get("nearest_area", [{}])[0].get("areaName", [{}])[0].get("value", "?")
+        temp = cc.get("temp_C", "?")
+        cond = cc.get("weatherDesc", [{}])[0].get("value", "?")
+        humidity = cc.get("humidity", "?")
+        wind = cc.get("windspeedKmph", "?")
+        feels = cc.get("FeelsLikeC", "?")
+        lines = [
+            f"[bold #00d4ff]{city_name}[/]",
+            f"[bold]Temperature:[/]  {temp}°C",
+            f"[bold]Condition:[/]    {cond}",
+            f"[bold]Humidity:[/]     {humidity}%",
+            f"[bold]Wind:[/]        {wind} km/h",
+            f"[bold]Feels like:[/]  {feels}°C",
+            "",
+            "[bold #ffa502]3-Day Forecast[/]",
+        ]
+        for day in data.get("weather", [])[:3]:
+            date = day.get("date", "?")
+            hi = day.get("maxtempC", "?")
+            lo = day.get("mintempC", "?")
+            desc = day.get("hourly", [{}])[0].get("weatherDesc", [{}])[0].get("value", "?")
+            lines.append(f"  [bold]{date}[/]  {lo}–{hi}°C  {desc}")
+        self.query_one("#weather-display", Static).update("\n".join(lines))
+
+    def _show_error(self, msg: str) -> None:
+        self.query_one("#weather-display", Static).update(f"[#ff4757]{msg}[/]")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP WINDOW
