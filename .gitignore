@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+brados_audit.log
+brados.log
+brados_integrity.json
+brados_files/quarantine/
+brados_files/brados_sec.sock
+brados_files/
+user_profiles/
+*.swp
+*.swo
+.DS_Store
