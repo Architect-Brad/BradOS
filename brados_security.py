@@ -225,7 +225,12 @@ class IntegrityDaemon:
             with open(tmp, "w") as f:
                 json.dump({"built_at": datetime.now().isoformat(),
                            "files": manifest}, f, indent=2)
-            os.replace(tmp, self.MANIFEST_PATH)
+            try:
+                os.replace(tmp, self.MANIFEST_PATH)
+            except FileNotFoundError:
+                self._audit.write("WARN", "INTEGRITY",
+                                  "Baseline build skipped (tmp path gone)")
+                return manifest
         self._audit.write("INFO", "INTEGRITY",
                           f"Baseline built: {len(manifest)} files")
         return manifest

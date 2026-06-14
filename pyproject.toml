@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brados"
+version = "3.0.0"
+description = "The only terminal OS that actually does security"
+requires-python = ">=3.12"
+dependencies = ["textual>=8.0.0"]
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+full = ["psutil", "requests", "cryptography", "pyyaml"]
+
+[project.urls]
+repository = "https://github.com/Architect-Brad/BradOS"
+
+[project.scripts]
+brados = "brados:run_shell"
+
+[tool.setuptools]
+py-modules = [
+    "brados", "brados_apps", "brados_bpkg", "brados_brash",
+    "brados_drivers", "brados_gui", "brados_kernel", "brados_kernel_core",
+    "brados_mail_server", "brados_security", "brados_shell",
+    "brados_system", "brados_test", "brados_vfs"
+]

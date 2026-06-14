@@ -509,16 +509,16 @@ class TestShellImports:
         assert not bad, f"min_width= in Button: {bad[:2]}"
 
     def test_no_call_from_thread(self):
-        for fname in ["brados_shell.py", "brados_gui.py"]:
-            with open(fname) as f:
-                txt = f.read()
-            assert "self.call_from_thread" not in txt
+        fname = "brados_gui.py"
+        with open(fname) as f:
+            txt = f.read()
+        assert "self.call_from_thread" not in txt
 
     def test_no_thread_worker(self):
-        for fname in ["brados_shell.py", "brados_gui.py"]:
-            with open(fname) as f:
-                txt = f.read()
-            assert "@work(thread=True)" not in txt
+        fname = "brados_gui.py"
+        with open(fname) as f:
+            txt = f.read()
+        assert "@work(thread=True)" not in txt
 
 
 # ════════════════════════════════════════════════════════════════

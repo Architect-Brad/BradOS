@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+*.egg-info/
+dist/
+build/
 brados_audit.log
 brados.log
 brados_integrity.json

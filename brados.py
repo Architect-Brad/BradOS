@@ -279,6 +279,15 @@ def run_brados():
             _os.execv(sys.executable, [sys.executable, __file__, "--shell"])
 
 
+# ── Console-scripts entry point ────────────────────────────────────────────────
+
+def run_shell():
+    """Entry point for ``brados`` console_scripts — launch desktop shell directly."""
+    init_dirs()
+    from brados_shell import run_shell as _shell_main
+    _shell_main()
+
+
 if __name__ == "__main__":
     try:
         run_brados()

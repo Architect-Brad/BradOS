@@ -28,7 +28,7 @@ Every other "Python OS" project is cosmetic — fake progress bars, fake authent
 
 ---
 
-## Architecture (11,100 lines, 12 files)
+## Architecture (14,640 lines, 15 files)
 
 ```
 brados.py                  ← Entry point
@@ -50,12 +50,16 @@ brados.py                  ← Entry point
 │     6 drivers              Network, Display, Storage, Input, Audio, Process
 │     Singleton registry     init/shutdown lifecycle, graceful degradation
 │
-├── brados_security.py     ← BradSec security (652 lines)
+├── brados_security.py     ← BradSec security + daemon (1,417 lines)
+│     BradSec daemon         Unix socket IPC at brodos_files/brados_sec.sock
+│     Policy engine          YAML per-process capability rules, auto-response
+│     File watcher           inotify real-time integrity, polling fallback
 │     Capability tokens      HMAC-SHA256 signed, TTL, tamper-proof
-│     Integrity daemon       SHA-256 manifest, ADDED/MODIFIED/DELETED
 │     Encrypted vault        PBKDF2 → Fernet, XOR fallback
 │     Threat scanner         perms, ports, hashes, known backdoor ports
 │     Audit log              NDJSON append-only, streamable, greppable
+│
+├── brados_policy.yaml     ← Per-process capability policy (auto-created)
 │
 ├── brados_apps.py         ← Classic-mode apps (967 lines)
 │     Safe eval              AST-based math evaluator (no exec())
@@ -135,6 +139,22 @@ sec.vault.get("api_key")
 # Append-only NDJSON audit trail
 sec.audit.write("INFO", "AUTH", "User logged in", {"user": "brad"})
 sec.audit.tail(50)
+```
+
+### Daemon & Policy
+
+```python
+from brados_security import get_bradsec_daemon
+
+daemon = get_bradsec_daemon()
+daemon.start()
+
+# Daemon enforces per-process capability policies
+# Real-time file watcher detects tampering
+# Auto-response: kill, quarantine, or warn
+
+# IPC via Unix socket (no network stack needed)
+# Policy: brados_policy.yaml (auto-created)
 ```
 
 ---
@@ -293,4 +313,4 @@ MIT — go ahead, build on it.
 
 ---
 
-*11,100 lines of Python. Zero kernel modules. Zero C extensions. A genuine OS-layer that fits in a terminal.*
+*14,640 lines of Python. Zero kernel modules. Zero C extensions. A genuine OS-layer that fits in a terminal.*
