@@ -88,7 +88,7 @@ brados.py                  ← Entry point
 
 ```bash
 # Clone
-git clone https://github.com/yourusername/BradOS.git
+git clone https://github.com/Architect-Brad/BradOS.git
 cd BradOS
 
 # One dependency required (textual). Everything else optional.
