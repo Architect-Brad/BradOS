@@ -33,13 +33,16 @@ from textual.widgets import (
     ListItem, ListView, Log, RichLog, Static, Switch,
     TabbedContent, TabPane, TextArea,
 )
-from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
+from textual.containers import Container, Grid, Horizontal, ScrollableContainer, Vertical
 from textual.reactive import reactive
 from textual.binding import Binding
 from textual import on, work
 from textual.events import Click, Key
 from textual.css.query import NoMatches
 from textual.message import Message
+
+from rich.markdown import Markdown
+from rich.style import Style
 
 from brados_system import (
     load_user_profile, save_user_profile, get_profile_path,
@@ -910,6 +913,10 @@ APPS = [
     {"id": "snake",      "icon": "🐍",  "name": "Snake Game", "desc": "Classic snake"},
     {"id": "vault",      "icon": "🔐",  "name": "Vault",      "desc": "Password manager"},
     {"id": "weather",    "icon": "🌤",  "name": "Weather",    "desc": "Forecast"},
+    # Row 7 — games & tools
+    {"id": "minesweeper","icon": "💣",  "name": "Minesweeper","desc": "Classic mines"},
+    {"id": "game2048",   "icon": "🎲",  "name": "2048",       "desc": "Tile game"},
+    {"id": "markdown",   "icon": "📝",  "name": "Markdown",   "desc": "MD preview"},
 ]
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -1314,6 +1321,9 @@ class DesktopScreen(Screen):
             "snake":      SnakeWindow,
             "vault":      VaultWindow,
             "weather":    WeatherWindow,
+            "minesweeper": MineWindow,
+            "game2048":    Game2048Window,
+            "markdown":    MarkdownWindow,
         }
         cls = screen_map.get(app_id)
         if not cls:
@@ -4792,6 +4802,449 @@ class WeatherWindow(BradWindow):
 
     def _show_error(self, msg: str) -> None:
         self.query_one("#weather-display", Static).update(f"[#ff4757]{msg}[/]")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MINESWEEPER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MineWindow(BradWindow):
+    APP_ID: ClassVar[str] = "minesweeper"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _ROWS = 10
+    _COLS = 10
+    _MINES = 10
+    _grid: list[list[str]]
+    _revealed: list[list[bool]]
+    _mine_positions: set[tuple[int, int]]
+    _game_over: bool
+    _first_click: bool
+    _flag_count: int
+    _start_time: float
+    _timer_interval = None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("💣  Minesweeper", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            with Horizontal(classes="panel-heading"):
+                yield Static("[bold #00d4ff]💣 10[/]", id="mine-count")
+                yield Button("😊", id="mine-restart")
+                yield Static("[bold #00d4ff]⏱ 0[/]", id="mine-timer")
+            yield Grid(id="mine-grid")
+
+    def on_mount(self) -> None:
+        self._init_game()
+
+    def _init_game(self) -> None:
+        self._grid = [[" " for _ in range(self._COLS)] for _ in range(self._ROWS)]
+        self._revealed = [[False] * self._COLS for _ in range(self._ROWS)]
+        self._mine_positions = set()
+        self._game_over = False
+        self._first_click = True
+        self._flag_count = 0
+        self._start_time = 0.0
+        if self._timer_interval:
+            try:
+                self._timer_interval.cancel()
+            except Exception:
+                pass
+            self._timer_interval = None
+        self._build_grid()
+        self._update_header()
+
+    def _build_grid(self) -> None:
+        grid = self.query_one("#mine-grid", Grid)
+        grid.remove_children()
+        grid.styles.grid_size_rows = self._ROWS
+        grid.styles.grid_size_columns = self._COLS
+        for r in range(self._ROWS):
+            for c in range(self._COLS):
+                btn = Button("", id=f"m-{r}-{c}")
+                btn.styles.width = 3
+                btn.styles.height = 1
+                btn.styles.min_width = 3
+                btn.styles.margin = (0, 0)
+                grid.mount(btn)
+
+    def _place_mines(self, safe_r: int, safe_c: int) -> None:
+        safe_zone = {(safe_r + dr, safe_c + dc)
+                     for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                     if 0 <= safe_r + dr < self._ROWS and 0 <= safe_c + dc < self._COLS}
+        candidates = [(r, c) for r in range(self._ROWS) for c in range(self._COLS)
+                      if (r, c) not in safe_zone]
+        self._mine_positions = set(random.sample(candidates, min(self._MINES, len(candidates))))
+
+    def _adj_mines(self, r: int, c: int) -> int:
+        return sum(1 for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                   if (dr or dc) and (r + dr, c + dc) in self._mine_positions)
+
+    def _reveal(self, r: int, c: int) -> None:
+        if not (0 <= r < self._ROWS and 0 <= c < self._COLS) or self._revealed[r][c]:
+            return
+        if self._grid[r][c] == "F":
+            return
+        self._revealed[r][c] = True
+        if (r, c) in self._mine_positions:
+            return
+        adj = self._adj_mines(r, c)
+        btn = self.query_one(f"#m-{r}-{c}", Button)
+        btn.disabled = True
+        if adj > 0:
+            colors = {1: "#00d4ff", 2: "#2ed573", 3: "#ff4757", 4: "#1e3a5f",
+                      5: "#ffa502", 6: "#00d4ff", 7: "#ff4757", 8: "#7f8c8d"}
+            btn.styles.color = colors.get(adj, "#ecf0f1")
+            btn.label = str(adj)
+        else:
+            btn.label = " "
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr or dc:
+                        self._reveal(r + dr, c + dc)
+
+    def _check_win(self) -> bool:
+        revealed = sum(1 for r in range(self._ROWS) for c in range(self._COLS)
+                       if self._revealed[r][c])
+        return revealed == self._ROWS * self._COLS - len(self._mine_positions)
+
+    def _reveal_all_mines(self) -> None:
+        for r, c in self._mine_positions:
+            try:
+                btn = self.query_one(f"#m-{r}-{c}", Button)
+                btn.label = "💣"
+                btn.disabled = True
+            except NoMatches:
+                pass
+
+    def _update_header(self) -> None:
+        remaining = self._MINES - self._flag_count
+        self.query_one("#mine-count", Static).update(f"[bold #00d4ff]💣 {remaining}[/]")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss()
+            return
+        if bid == "mine-restart":
+            self._init_game()
+            return
+        if not bid or not bid.startswith("m-") or self._game_over:
+            return
+        parts = bid.split("-")
+        if len(parts) != 3:
+            return
+        r, c = int(parts[1]), int(parts[2])
+        if self._revealed[r][c] or self._grid[r][c] == "F":
+            return
+        if self._first_click:
+            self._first_click = False
+            self._place_mines(r, c)
+            self._start_time = time.time()
+            self._timer_interval = self.set_interval(1.0, self._tick_timer)
+        if (r, c) in self._mine_positions:
+            self._game_over = True
+            self._reveal_all_mines()
+            if self._timer_interval:
+                try:
+                    self._timer_interval.cancel()
+                except Exception:
+                    pass
+            self.notify("💥 Game Over!", severity="error")
+            return
+        self._reveal(r, c)
+        if self._check_win():
+            self._game_over = True
+            if self._timer_interval:
+                try:
+                    self._timer_interval.cancel()
+                except Exception:
+                    pass
+            self.notify("🎉 You Win!", severity="information")
+
+    @on(Click, "#mine-grid Button")
+    def _on_mine_right_click(self, event: Click) -> None:
+        if event.button != 3:
+            return
+        bid = getattr(event.widget, "id", None) or ""
+        if not bid.startswith("m-"):
+            return
+        parts = bid.split("-")
+        if len(parts) != 3:
+            return
+        r, c = int(parts[1]), int(parts[2])
+        if self._revealed[r][c] or self._game_over:
+            return
+        btn = self.query_one(f"#{bid}", Button)
+        if self._grid[r][c] == "F":
+            self._grid[r][c] = " "
+            self._flag_count -= 1
+            btn.label = ""
+        else:
+            self._grid[r][c] = "F"
+            self._flag_count += 1
+            btn.label = "🚩"
+        self._update_header()
+
+    def _tick_timer(self) -> None:
+        elapsed = int(time.time() - self._start_time)
+        self.query_one("#mine-timer", Static).update(f"[bold #00d4ff]⏱ {elapsed}[/]")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2048 GAME
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Game2048Window(BradWindow):
+    APP_ID: ClassVar[str] = "game2048"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _SIZE = 4
+    _grid: list[list[int]]
+    _score: int
+    _game_over: bool
+    _won: bool
+    _COLORS = {
+        2: "#eee4da", 4: "#ede0c8", 8: "#f2b179", 16: "#f59563",
+        32: "#f67c5f", 64: "#f65e3b", 128: "#edcf72", 256: "#edcc61",
+        512: "#edc850", 1024: "#edc53f", 2048: "#edc22e",
+    }
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("🎲  2048", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            with Horizontal(classes="panel-heading"):
+                yield Static("[bold #00d4ff]Score: 0[/]", id="g2048-score")
+                yield Button("New Game", id="g2048-new")
+            with Vertical(id="g2048-grid"):
+                for r in range(self._SIZE):
+                    with Horizontal(classes="g2048-row"):
+                        for c in range(self._SIZE):
+                            yield Static("", id=f"g2048-{r}-{c}", classes="g2048-cell")
+
+    def on_mount(self) -> None:
+        self._reset_game()
+
+    def _reset_game(self) -> None:
+        self._grid = [[0] * self._SIZE for _ in range(self._SIZE)]
+        self._score = 0
+        self._game_over = False
+        self._won = False
+        self._spawn_tile()
+        self._spawn_tile()
+        self._render_grid()
+
+    def _spawn_tile(self) -> None:
+        empty = [(r, c) for r in range(self._SIZE) for c in range(self._SIZE)
+                 if self._grid[r][c] == 0]
+        if not empty:
+            return
+        r, c = random.choice(empty)
+        self._grid[r][c] = 4 if random.random() < 0.1 else 2
+
+    def _render_grid(self) -> None:
+        self.query_one("#g2048-score", Static).update(f"[bold #00d4ff]Score: {self._score}[/]")
+        for r in range(self._SIZE):
+            for c in range(self._SIZE):
+                val = self._grid[r][c]
+                cell = self.query_one(f"#g2048-{r}-{c}", Static)
+                cell.styles.background = self._COLORS.get(val, "#1a2740")
+                if val == 0:
+                    cell.update("")
+                else:
+                    cell.update(str(val))
+                    cell.styles.color = "#776e65" if val <= 4 else "#f9f6f2"
+                    cell.styles.text_style = "bold"
+                cell.styles.width = 6
+                cell.styles.height = 3
+                cell.styles.content_align_vertical = "middle"
+                cell.styles.content_align_horizontal = "center"
+
+    def _slide(self, row: list[int]) -> list[int]:
+        tiles = [v for v in row if v != 0]
+        merged = []
+        skip = False
+        for i in range(len(tiles)):
+            if skip:
+                skip = False
+                continue
+            if i + 1 < len(tiles) and tiles[i] == tiles[i + 1]:
+                merged.append(tiles[i] * 2)
+                self._score += tiles[i] * 2
+                skip = True
+            else:
+                merged.append(tiles[i])
+        merged += [0] * (self._SIZE - len(merged))
+        return merged
+
+    def _slide_left(self) -> bool:
+        changed = False
+        for i in range(self._SIZE):
+            new_row = self._slide(self._grid[i])
+            if new_row != self._grid[i]:
+                changed = True
+                self._grid[i] = new_row
+        return changed
+
+    def _slide_right(self) -> bool:
+        changed = False
+        for i in range(self._SIZE):
+            rev = list(reversed(self._grid[i]))
+            new_row = self._slide(rev)
+            new_row = list(reversed(new_row))
+            if new_row != self._grid[i]:
+                changed = True
+                self._grid[i] = new_row
+        return changed
+
+    def _slide_up(self) -> bool:
+        changed = False
+        for c in range(self._SIZE):
+            col = [self._grid[r][c] for r in range(self._SIZE)]
+            new_col = self._slide(col)
+            if new_col != col:
+                changed = True
+                for r in range(self._SIZE):
+                    self._grid[r][c] = new_col[r]
+        return changed
+
+    def _slide_down(self) -> bool:
+        changed = False
+        for c in range(self._SIZE):
+            col = [self._grid[r][c] for r in range(self._SIZE)]
+            rev = list(reversed(col))
+            new_col = self._slide(rev)
+            new_col = list(reversed(new_col))
+            if new_col != col:
+                changed = True
+                for r in range(self._SIZE):
+                    self._grid[r][c] = new_col[r]
+        return changed
+
+    def _check_win(self) -> bool:
+        for r in range(self._SIZE):
+            for c in range(self._SIZE):
+                if self._grid[r][c] >= 2048:
+                    return True
+        return False
+
+    def _check_game_over(self) -> bool:
+        for r in range(self._SIZE):
+            for c in range(self._SIZE):
+                if self._grid[r][c] == 0:
+                    return False
+                if c + 1 < self._SIZE and self._grid[r][c] == self._grid[r][c + 1]:
+                    return False
+                if r + 1 < self._SIZE and self._grid[r][c] == self._grid[r + 1][c]:
+                    return False
+        return True
+
+    def on_key(self, event) -> None:
+        if self._game_over:
+            return
+        moved = False
+        if event.key == "left":
+            moved = self._slide_left()
+        elif event.key == "right":
+            moved = self._slide_right()
+        elif event.key == "up":
+            moved = self._slide_up()
+        elif event.key == "down":
+            moved = self._slide_down()
+        if moved:
+            self._spawn_tile()
+            self._render_grid()
+            if self._check_win() and not self._won:
+                self._won = True
+                self.notify("🎉 You reached 2048!", severity="information")
+            if self._check_game_over():
+                self._game_over = True
+                self.notify("Game Over! No moves left.", severity="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss()
+        elif bid == "g2048-new":
+            self._reset_game()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MARKDOWN PREVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MarkdownWindow(BradWindow):
+    APP_ID: ClassVar[str] = "markdown"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _current_file: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("📝  Markdown Preview", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Horizontal():
+            with Vertical(id="md-file-list"):
+                yield Static("[bold #7f8c8d]Files[/]", classes="panel-heading")
+                yield ListView(id="md-list")
+            with Vertical(id="md-preview"):
+                yield Static("[bold #7f8c8d]Preview[/]", classes="panel-heading")
+                yield Static("Select a file to preview", id="md-content")
+                yield Button("Open in Editor", id="md-open-editor")
+
+    def on_mount(self) -> None:
+        self._current_file = None
+        self._scan_files()
+
+    def _scan_files(self) -> None:
+        vfs: VirtualFileSystem = self.app.vfs
+        home = f"/home/{self.app.user_profile.get('username', 'user')}"
+        md_files = []
+        try:
+            for entry in vfs.ls(home):
+                if entry["name"].endswith(".md") and entry["type"] == "file":
+                    md_files.append(entry["name"])
+        except Exception:
+            pass
+        md_files.sort()
+        lv = self.query_one("#md-list", ListView)
+        lv.clear()
+        for name in md_files:
+            lv.append(ListItem(Static(name)))
+
+    @on(ListView.Selected, "#md-list")
+    def _on_file_selected(self, event: ListView.Selected) -> None:
+        item = event.item
+        if not item:
+            return
+        static_widget = item.children[0] if item.children else None
+        if not isinstance(static_widget, Static):
+            return
+        filename = str(static_widget.renderable or "")
+        vfs: VirtualFileSystem = self.app.vfs
+        home = f"/home/{self.app.user_profile.get('username', 'user')}"
+        path = f"{home}/{filename}"
+        try:
+            content = vfs.read_text(path)
+            md = Markdown(content)
+            self.query_one("#md-content", Static).update(md)
+            self._current_file = path
+        except Exception as e:
+            self.query_one("#md-content", Static).update(f"[#ff4757]Error: {e}[/]")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss()
+        elif bid == "md-open-editor":
+            if self._current_file:
+                self.dismiss()
+                self.app.post_message(LaunchApp("editor"))
+            else:
+                self.notify("No file selected.", severity="warning")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELP WINDOW
