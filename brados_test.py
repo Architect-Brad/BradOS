@@ -483,14 +483,14 @@ class TestShellImports:
 
     def test_apps_manifest(self):
         from brados_shell import APPS
-        assert len(APPS) == 23
+        assert len(APPS) == 24
         ids = {a["id"] for a in APPS}
         for required in ["terminal", "browser", "files", "editor", "mail",
                          "notes", "calculator", "clock", "monitor", "logs",
                          "kernel", "settings", "bradsec", "bpkg",
                          "paint", "converter", "rss",
                          "snake", "vault", "weather",
-                         "minesweeper", "game2048", "markdown"]:
+                         "minesweeper", "game2048", "markdown", "mesh"]:
             assert required in ids
 
     def test_splash_screen(self):
@@ -648,6 +648,48 @@ class TestAsyncWorkers:
         from brados_gui import MonitorScreen
         result = await asyncio.to_thread(MonitorScreen._collect_extra)
         assert isinstance(result, str)
+
+
+# ════════════════════════════════════════════════════════════════
+# MESH TESTS
+# ════════════════════════════════════════════════════════════════
+
+class TestMesh:
+    def test_mesh_import(self):
+        from brados_mesh import MeshNode, get_mesh, Peer
+        assert MeshNode is not None
+
+    def test_mesh_start_stop(self):
+        from brados_mesh import MeshNode
+        node = MeshNode(secret="test123", discovery_port=0, data_port=0)
+        node.start()
+        assert node.running
+        assert node.peer_id
+        node.stop()
+        assert not node.running
+
+    def test_mesh_peers_empty(self):
+        from brados_mesh import MeshNode
+        node = MeshNode(secret="test456", discovery_port=0, data_port=0)
+        node.start()
+        assert node.peers == []
+        node.stop()
+
+    def test_mesh_status_dict(self):
+        from brados_mesh import MeshNode
+        node = MeshNode(secret="test789", discovery_port=0, data_port=0)
+        node.start()
+        st = node.status()
+        assert st["running"]
+        assert st["peer_id"]
+        assert st["peers"] == 0
+        node.stop()
+
+    def test_mesh_singleton(self):
+        from brados_mesh import get_mesh
+        m1 = get_mesh()
+        m2 = get_mesh()
+        assert m1 is m2
 
 
 # ════════════════════════════════════════════════════════════════

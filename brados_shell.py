@@ -54,6 +54,7 @@ from brados_drivers import create_default_registry, DriverRegistry, NetworkDrive
 from brados_security import BradSec, Cap, get_bradsec, get_bradsec_daemon, BRADSEC_SOCKET_PATH
 from brados_bpkg import BpkgManager, get_bpkg
 from brados_mail_server import get_mail_server
+from brados_mesh import get_mesh, MeshNode, Peer
 
 try:
     import jedi
@@ -917,6 +918,7 @@ APPS = [
     {"id": "minesweeper","icon": "💣",  "name": "Minesweeper","desc": "Classic mines"},
     {"id": "game2048",   "icon": "🎲",  "name": "2048",       "desc": "Tile game"},
     {"id": "markdown",   "icon": "📝",  "name": "Markdown",   "desc": "MD preview"},
+    {"id": "mesh",       "icon": "🕸",  "name": "Mesh",       "desc": "P2P network"},
 ]
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -1324,6 +1326,7 @@ class DesktopScreen(Screen):
             "minesweeper": MineWindow,
             "game2048":    Game2048Window,
             "markdown":    MarkdownWindow,
+            "mesh":        MeshWindow,
         }
         cls = screen_map.get(app_id)
         if not cls:
@@ -5247,6 +5250,146 @@ class MarkdownWindow(BradWindow):
                 self.notify("No file selected.", severity="warning")
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MESH WINDOW — P2P networking
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MeshWindow(BradWindow):
+    APP_ID: ClassVar[str] = "mesh"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    _section: str = "peers"
+    _selected_peer: Peer | None = None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("🕸  Mesh Network", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+
+        with Horizontal():
+            # Sidebar
+            with Vertical(id="mail-left"):
+                yield Static("[bold #00d4ff]Mesh[/]", classes="panel-heading")
+                yield Button("🕸 Peers",   id="mesh-btn-peers", classes="folder-btn active")
+                yield Button("💬 Chat",    id="mesh-btn-chat",  classes="folder-btn")
+                yield Static("", id="mesh-status", classes="mesh-status")
+
+            # Content
+            with Vertical(id="mail-right"):
+                # Peers view
+                with Vertical(id="mesh-peers-view"):
+                    yield Static("[bold #7f8c8d]Discovered Peers[/]", classes="panel-heading")
+                    yield ListView(id="mesh-peer-list")
+                # Chat view
+                with Vertical(id="mesh-chat-view"):
+                    yield Static("[bold #7f8c8d]Chat[/]", classes="panel-heading")
+                    yield RichLog(id="mesh-chat-log", markup=True, highlight=True)
+                    with Horizontal(id="mesh-chat-bar"):
+                        yield Input(placeholder="Type a message…", id="mesh-chat-input")
+                        yield Button("Send", id="mesh-chat-send", variant="primary")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._mesh = get_mesh()
+        if not self._mesh.running:
+            self._mesh.start()
+        self._mesh.on("peer_discovered", lambda p: self.call_from_thread(self._refresh_peers))
+        self._mesh.on("peer_seen", lambda p: self.call_from_thread(self._refresh_peers))
+        self._mesh.on("chat", lambda msg, addr: self.call_from_thread(self._on_chat, msg))
+        self._refresh_peers()
+        self._update_status()
+        self._switch_view("peers")
+        self.query_one("#mesh-peers-view", Vertical).styles.display = "block"
+        self.query_one("#mesh-chat-view", Vertical).styles.display = "none"
+
+    def _update_status(self) -> None:
+        st = self._mesh.status()
+        label = f"[#7f8c8d]ID: [bold #00d4ff]{st['peer_id'][:12]}[/]\n[#7f8c8d]Peers: [bold]{st['peers']}[/][/]"
+        try:
+            self.query_one("#mesh-status", Static).update(label)
+        except NoMatches:
+            pass
+
+    def _refresh_peers(self) -> None:
+        try:
+            lv = self.query_one("#mesh-peer-list", ListView)
+        except NoMatches:
+            return
+        lv.clear()
+        for p in self._mesh.peers:
+            alive_tag = "[#2ed573]●[/]" if p.alive else "[#7f8c8d]○[/]"
+            label = f"{alive_tag} [bold]{p.hostname}[/] [#7f8c8d]{p.ip}[/]"
+            lv.append(ListItem(Static(label)))
+        self._update_status()
+
+    def _on_chat(self, msg: dict) -> None:
+        try:
+            log = self.query_one("#mesh-chat-log", RichLog)
+            sender = msg.get("sender", "?")[:8]
+            text = msg.get("payload", {}).get("text", "")
+            log.write(f"[#00d4ff]<{sender}>[/] {text}")
+        except NoMatches:
+            pass
+
+    def _switch_view(self, section: str) -> None:
+        self._section = section
+        peers_view = self.query_one("#mesh-peers-view", Vertical)
+        chat_view = self.query_one("#mesh-chat-view", Vertical)
+        peers_view.styles.display = "block" if section == "peers" else "none"
+        chat_view.styles.display = "block" if section == "chat" else "none"
+        for sid in ("peers", "chat"):
+            btn = self.query_one(f"#mesh-btn-{sid}", Button)
+            btn.classes = "folder-btn" + (" active" if sid == section else "")
+        if section == "chat":
+            self.query_one("#mesh-chat-input", Input).focus()
+
+    def _send_message(self) -> None:
+        inp = self.query_one("#mesh-chat-input", Input)
+        text = inp.value.strip()
+        if not text:
+            return
+        if not self._selected_peer:
+            self.notify("Select a peer from the Peers view first.", severity="warning")
+            return
+        inp.value = ""
+        self._mesh.send(self._selected_peer, "chat", {
+            "text": text,
+            "from": self._mesh.peer_id,
+        })
+        try:
+            log = self.query_one("#mesh-chat-log", RichLog)
+            log.write(f"[#2ed573]<you>[/] {text}")
+        except NoMatches:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss()
+        elif bid == "mesh-btn-peers":
+            self._switch_view("peers")
+        elif bid == "mesh-btn-chat":
+            self._switch_view("chat")
+        elif bid == "mesh-chat-send":
+            self._send_message()
+
+    @on(Input.Submitted, "#mesh-chat-input")
+    def _input_submitted(self) -> None:
+        self._send_message()
+
+    @on(ListView.Selected, "#mesh-peer-list")
+    def _on_peer_selected(self, event: ListView.Selected) -> None:
+        if not event.item:
+            return
+        idx = self.query_one("#mesh-peer-list", ListView).index
+        peers = self._mesh.peers
+        if 0 <= idx < len(peers):
+            self._selected_peer = peers[idx]
+            self.notify(f"Selected {self._selected_peer.hostname} for chat.", severity="information")
+            self._switch_view("chat")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # HELP WINDOW
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -5497,6 +5640,9 @@ class BradOSShell(App):
         daemon.on_alert(lambda findings: self.call_from_thread(
             self.notify, f"⚠ {len(findings)} security alert(s)", severity="error"
         ))
+        # Start mesh networking
+        self._mesh = get_mesh()
+        self._mesh.start()
         self.packages = get_bpkg()
         for path in ["/home", "/tmp"]:
             try:
