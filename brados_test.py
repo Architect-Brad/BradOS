@@ -659,9 +659,12 @@ class TestMesh:
         from brados_mesh import MeshNode, get_mesh, Peer
         assert MeshNode is not None
 
-    def test_mesh_start_stop(self):
+    def _fresh_node(self, secret: str, base_port: int) -> any:
         from brados_mesh import MeshNode
-        node = MeshNode(secret="test123", discovery_port=0, data_port=0)
+        return MeshNode(secret=secret, discovery_port=base_port, data_port=base_port + 1000)
+
+    def test_mesh_start_stop(self):
+        node = self._fresh_node("test123", 20100)
         node.start()
         assert node.running
         assert node.peer_id
@@ -669,15 +672,13 @@ class TestMesh:
         assert not node.running
 
     def test_mesh_peers_empty(self):
-        from brados_mesh import MeshNode
-        node = MeshNode(secret="test456", discovery_port=0, data_port=0)
+        node = self._fresh_node("test456", 20200)
         node.start()
         assert node.peers == []
         node.stop()
 
     def test_mesh_status_dict(self):
-        from brados_mesh import MeshNode
-        node = MeshNode(secret="test789", discovery_port=0, data_port=0)
+        node = self._fresh_node("test789", 20300)
         node.start()
         st = node.status()
         assert st["running"]

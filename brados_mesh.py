@@ -113,6 +113,7 @@ class MeshNode:
             self._tcp.close()
         except Exception:
             pass
+        time.sleep(0.3)
 
     def on(self, event: str, callback: Callable) -> None:
         self._callbacks.setdefault(event, []).append(callback)

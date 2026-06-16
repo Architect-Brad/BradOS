@@ -4514,7 +4514,7 @@ class SnakeWindow(BradWindow):
         self._game_over = False
         self._running = True
         self._spawn_food()
-        self._render()
+        self._update_display()
         self.set_interval(0.2, self._tick)
 
     def _spawn_food(self) -> None:
@@ -4534,7 +4534,7 @@ class SnakeWindow(BradWindow):
                 or nh in self._snake[:-1]):
             self._game_over = True
             self._running = False
-            self._render()
+            self._update_display()
             return
         self._snake.insert(0, nh)
         if nh == self._food:
@@ -4542,9 +4542,9 @@ class SnakeWindow(BradWindow):
             self._spawn_food()
         else:
             self._snake.pop()
-        self._render()
+        self._update_display()
 
-    def _render(self) -> None:
+    def _update_display(self) -> None:
         s = set(self._snake)
         head = self._snake[0] if self._snake else None
         lines = []
