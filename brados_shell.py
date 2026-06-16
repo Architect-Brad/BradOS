@@ -24,7 +24,7 @@ import string
 import urllib.request
 import urllib.parse
 from datetime import datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.screen import Screen, ModalScreen
@@ -1125,10 +1125,21 @@ class LoginScreen(Screen):
     def _go(self) -> None:
         uname = self.query_one("#usr", Input).value.strip()
         if not uname:
-            self.query_one("#login-err", Static).update("⚠  Username required"); return
+            self.query_one("#login-err", Static).update("⚠  Username required")
+            self._shake()
+            return
         self.app.user_profile = load_user_profile(uname)
         self.query_one("#login-err", Static).update("")
         self.app.push_screen(DesktopScreen())
+
+    async def _shake(self) -> None:
+        box = self.query_one("#login-box")
+        for _ in range(3):
+            box.styles.animate("offset", (3, 0), duration=0.04)
+            await asyncio.sleep(0.05)
+            box.styles.animate("offset", (-3, 0), duration=0.04)
+            await asyncio.sleep(0.05)
+        box.styles.animate("offset", (0, 0), duration=0.04)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1168,6 +1179,23 @@ class TrayStats(Static):
             return "psutil ✗"
 
     def render(self) -> str: return self._s
+
+
+class SecIndicator(Static):
+    _dot: reactive[str] = reactive("●")
+
+    def on_mount(self) -> None:
+        self.styles.animate("opacity", 0.4, duration=1.5)
+        self.styles.animate("opacity", 1.0, duration=1.5)
+        self.set_interval(3, self._pulse)
+
+    def _pulse(self) -> None:
+        self._dot = "◉" if self._dot == "●" else "●"
+        self.styles.animate("opacity", 0.4, duration=1.0)
+        self.styles.animate("opacity", 1.0, duration=1.0)
+
+    def render(self) -> str:
+        return f"[#00d4ff]{self._dot} sec[/]"
 
 
 class AppIconWidget(Static):
@@ -1267,6 +1295,7 @@ class DesktopScreen(Screen):
             with Horizontal(id="taskbar-apps"):
                 yield Static("[#1e3a5f]No apps open[/]", id="taskbar-placeholder")
             with Horizontal(id="taskbar-tray"):
+                yield SecIndicator(id="tray-sec")
                 yield TrayStats(id="tray-stats")
                 yield Static("", id="tray-sep")
                 yield TopClock(id="tray-clock")
@@ -1281,6 +1310,7 @@ class DesktopScreen(Screen):
         for i, widget in enumerate(self.query(AppIconWidget)):
             widget.styles.opacity = 0.0
             widget.styles.animate("opacity", 1.0, duration=0.4, delay=i * 0.05)
+        self.set_interval(3, self._pulse_icons)
 
     # ── Message / button handlers ─────────────────────────────────────────────
 
@@ -1376,6 +1406,14 @@ class DesktopScreen(Screen):
     def action_open_help(self) -> None:
         self.app.push_screen(HelpWindow())
 
+    def _pulse_icons(self) -> None:
+        self._icon_pulse = not getattr(self, "_icon_pulse", False)
+        for widget in self.query(AppIconWidget):
+            aid = widget._app["id"]
+            if aid in self._open_apps:
+                bg = "#243450" if self._icon_pulse else "#1a2740"
+                widget.styles.background = bg
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BASE WINDOW — every app screen inherits this for free minimize support
@@ -1386,6 +1424,7 @@ class BradWindow(Screen):
 
     Provides:
     - Smooth fade-in animation on open.
+    - Smooth fade-out animation on close.
     - Minimize button (—) via @on selector — doesn't interfere with subclass handlers.
     - APP_ID class variable for MinimizeApp message.
     """
@@ -1395,6 +1434,13 @@ class BradWindow(Screen):
     def on_mount(self) -> None:
         self.styles.opacity = 0.0
         self.styles.animate("opacity", 1.0, duration=0.2)
+
+    def dismiss(self, result=None) -> None:
+        self.styles.animate("opacity", 0.0, duration=0.15)
+        self.set_timer(0.18, self._finish_dismiss, result)
+
+    def _finish_dismiss(self, result=None) -> None:
+        super().dismiss(result)
 
     @on(Button.Pressed, "#btn-min")
     def _do_minimize(self, event: Button.Pressed) -> None:
@@ -4484,7 +4530,7 @@ class SnakeWindow(BradWindow):
     APP_ID: ClassVar[str] = "snake"
     BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
 
-    _GRID = 20
+    _MIN_GRID = 10
     _snake: list[tuple[int, int]] = []
     _food: tuple[int, int] = (0, 0)
     _dir: tuple[int, int] = (0, 1)
@@ -4492,22 +4538,34 @@ class SnakeWindow(BradWindow):
     _score: int = 0
     _game_over: bool = False
     _running: bool = False
+    _grid_w: int = 20
+    _grid_h: int = 20
+    _timer: Any = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="win-titlebar"):
             yield Static("🐍  Snake Game", classes="win-title")
             yield Button("—", id="btn-min", classes="btn-min")
             yield Button("✕", id="btn-close", classes="win-close")
-        with Vertical():
-            yield Static(f"[bold #00d4ff]Score: 0[/]", id="snake-score")
+        with Vertical(id="snake-body"):
             yield Static("", id="snake-grid")
+            yield Static("", id="snake-score", classes="panel-heading")
 
     def on_mount(self) -> None:
+        self._calc_grid()
         self._start_game()
 
+    def _calc_grid(self) -> None:
+        term_w, term_h = os.get_terminal_size()
+        self._grid_w = max(self._MIN_GRID, min(term_w - 4, 48))
+        self._grid_h = max(self._MIN_GRID, min(term_h - 8, 32))
+
     def _start_game(self) -> None:
-        center = self._GRID // 2
-        self._snake = [(center, center), (center, center - 1), (center, center - 2)]
+        self._calc_grid()
+        if self._timer:
+            self._timer.stop()
+        cw, ch = self._grid_w // 2, self._grid_h // 2
+        self._snake = [(ch, cw), (ch, cw - 1), (ch, cw - 2)]
         self._dir = (0, 1)
         self._next_dir = (0, 1)
         self._score = 0
@@ -4515,11 +4573,11 @@ class SnakeWindow(BradWindow):
         self._running = True
         self._spawn_food()
         self._update_display()
-        self.set_interval(0.2, self._tick)
+        self._timer = self.set_interval(0.12, self._tick)
 
     def _spawn_food(self) -> None:
         occupied = set(self._snake)
-        free = [(r, c) for r in range(self._GRID) for c in range(self._GRID) if (r, c) not in occupied]
+        free = [(r, c) for r in range(self._grid_h) for c in range(self._grid_w) if (r, c) not in occupied]
         if free:
             self._food = random.choice(free)
 
@@ -4530,7 +4588,7 @@ class SnakeWindow(BradWindow):
         head = self._snake[0]
         dr, dc = self._dir
         nh = (head[0] + dr, head[1] + dc)
-        if (nh[0] < 0 or nh[0] >= self._GRID or nh[1] < 0 or nh[1] >= self._GRID
+        if (nh[0] < 0 or nh[0] >= self._grid_h or nh[1] < 0 or nh[1] >= self._grid_w
                 or nh in self._snake[:-1]):
             self._game_over = True
             self._running = False
@@ -4545,26 +4603,31 @@ class SnakeWindow(BradWindow):
         self._update_display()
 
     def _update_display(self) -> None:
-        s = set(self._snake)
+        snake_set = set(self._snake)
         head = self._snake[0] if self._snake else None
+        f_r, f_c = self._food
         lines = []
-        for r in range(self._GRID):
-            row = ""
-            for c in range(self._GRID):
+        for r in range(self._grid_h):
+            row_chars = []
+            for c in range(self._grid_w):
                 if (r, c) == self._food:
-                    row += "[#ff4757]●[/]"
+                    row_chars.append("●")
                 elif (r, c) == head:
-                    row += "[#00d4ff]█[/]"
-                elif (r, c) in s:
-                    row += "[#2ed573]█[/]"
+                    row_chars.append("█")
+                elif (r, c) in snake_set:
+                    row_chars.append("█")
                 else:
-                    row += " "
-            lines.append(row)
+                    row_chars.append("·")
+            lines.append(" ".join(row_chars))
         grid = "\n".join(lines)
         if self._game_over:
-            grid += f"\n\n[bold #ff4757]  GAME OVER — Score: {self._score}[/]\n  [bold #7f8c8d]SPACE to restart[/]"
-        self.query_one("#snake-grid", Static).update(grid)
-        self.query_one("#snake-score", Static).update(f"[bold #00d4ff]Score: {self._score}[/]")
+            overlay = f"\n[bold #ff4757]  GAME OVER — Score: {self._score}  [/]\n[bold #7f8c8d]  SPACE to restart  [/]"
+        else:
+            overlay = ""
+        self.query_one("#snake-grid", Static).update(grid + overlay)
+        self.query_one("#snake-score", Static).update(
+            f"[bold #00d4ff]Score: {self._score}[/]  [#7f8c8d]{self._grid_w}x{self._grid_h}[/]"
+        )
 
     def on_key(self, event: Key) -> None:
         if event.key == "space" and self._game_over:

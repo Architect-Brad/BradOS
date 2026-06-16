@@ -847,6 +847,7 @@ class FileWatcher:
 
     WATCHED_EXTS = {".py", ".json", ".yaml", ".yml", ".log", ".enc"}
     IGNORE_DIRS  = {"__pycache__", ".git", "backup_", QUARANTINE_DIR}
+    IGNORE_FILES = {"brados_audit.log", "brados_integrity.json"}
 
     def __init__(self, audit: AuditLog, callback: callable):
         self._audit = audit
@@ -922,6 +923,8 @@ class FileWatcher:
                     i += 16 + name_len
                     if not name or not any(name.endswith(e) for e in self.WATCHED_EXTS):
                         continue
+                    if name in self.IGNORE_FILES:
+                        continue
                     dir_path = wd_map.get(wd, ".")
                     fpath = os.path.join(dir_path, name)
                     self._callback("MODIFIED", fpath)
@@ -949,6 +952,8 @@ class FileWatcher:
                     dirs[:] = [d for d in dirs if d not in self.IGNORE_DIRS]
                     for fname in fnames:
                         if not any(fname.endswith(e) for e in self.WATCHED_EXTS):
+                            continue
+                        if fname in self.IGNORE_FILES:
                             continue
                         fpath = os.path.join(root, fname)
                         try:
