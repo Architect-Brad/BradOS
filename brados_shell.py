@@ -1446,7 +1446,10 @@ class BradWindow(Screen):
     def _do_minimize(self, event: Button.Pressed) -> None:
         event.stop()
         self.post_message(MinimizeApp(self.APP_ID))
-        self.dismiss()
+        self.dismiss_immediate()
+
+    def dismiss_immediate(self) -> None:
+        super().dismiss()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BRASH TERMINAL WINDOW  (replaces old TerminalWindow)
@@ -1462,6 +1465,7 @@ class TerminalWindow(BradWindow):
     def compose(self) -> ComposeResult:
         with Horizontal(classes="win-titlebar"):
             yield Static("⌨  Brash Terminal", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
             yield Button("✕", classes="win-close", id="btn-close")
 
         yield RichLog(id="term-log", highlight=True, markup=True)
@@ -2084,6 +2088,7 @@ class BradTextEditor(BradWindow):
             yield Button("💾 Save",  id="btn-save", classes="btn-primary")
             yield Button("🔍",       id="btn-find")
             yield Button("🎨",       id="btn-theme")
+            yield Button("—",        id="btn-min", classes="btn-min")
             yield Button("✕",        id="btn-close", classes="win-close")
 
         with Vertical(id="editor-body-outer"):
@@ -2951,9 +2956,6 @@ class CalculatorWindow(BradWindow):
                         yield Button(lbl, id=bid, classes=f"cbtn {cls}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-min":
-            self.post_message(MinimizeApp("calculator"))
-            self.dismiss(); return
         if event.button.id == "btn-close": self.dismiss(); return
         if event.button.id and event.button.id.startswith("c-"):
             self._key(event.button.label.plain.strip())
