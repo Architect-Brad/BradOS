@@ -49,6 +49,37 @@ if "--gui" in sys.argv:
         print(f"GUI import error: {e}")
         sys.exit(1)
 
+if "--daemon" in sys.argv:
+    try:
+        from brados_security import get_bradsec, get_bradsec_daemon
+        from brados_apps import init_dirs
+    except ImportError as e:
+        print(f"Daemon import error: {e}")
+        sys.exit(1)
+
+    import signal
+    import threading
+
+    init_dirs()
+    sec = get_bradsec()
+    daemon = get_bradsec_daemon()
+    daemon.start()
+
+    stop_event = threading.Event()
+
+    def _handle_signal(signum, frame):
+        daemon.stop()
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    try:
+        stop_event.wait()
+    except KeyboardInterrupt:
+        daemon.stop()
+    sys.exit(0)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Classic terminal mode
 # ─────────────────────────────────────────────────────────────────────────────
