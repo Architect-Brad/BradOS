@@ -141,6 +141,16 @@ class MeshNode:
                 sent += 1
         return sent
 
+    def send_file(self, peer: Peer, filename: str, data: bytes) -> bool:
+        """Send a file to a peer as a base64 payload."""
+        import base64
+        payload = {
+            "filename": filename,
+            "size": len(data),
+            "content": base64.b64encode(data).decode(),
+        }
+        return self.send(peer, "file_transfer", payload)
+
     def status(self) -> dict:
         return {
             "peer_id": self._peer_id,

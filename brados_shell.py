@@ -48,6 +48,7 @@ from rich.style import Style
 from brados_system import (
     load_user_profile, save_user_profile, get_profile_path,
     atomic_write_json, USER_PROFILES_DIR, BRADOS_FILES_DIR,
+    load_config, save_config, resolve_theme, THEMES,
 )
 from brados_apps import safe_eval, html_to_text, init_dirs
 from brados_vfs import create_default_vfs, VirtualFileSystem
@@ -74,7 +75,24 @@ except ImportError:
 #  Muted:             #7f8c8d
 #  Border:            #1e3a5f
 
-SHELL_CSS = """
+# ── CSS color → theme-key mapping for runtime theming ────────────────────
+# SHELL_CSS uses $var references; get_css_variables() supplies values.
+
+_CSS_COLORS = {
+    "#060d17": "$bg_deep",
+    "#0d1b2a": "$bg_base",
+    "#1a2740": "$bg_mid",
+    "#243450": "$bg_light",
+    "#00d4ff": "$accent",
+    "#ecf0f1": "$text",
+    "#7f8c8d": "$muted",
+    "#1e3a5f": "$border",
+    "#2ed573": "$success",
+    "#ffa502": "$warning",
+    "#ff4757": "$danger",
+}
+
+_RAW_CSS = """
 /* ═══════════════════════════════════════════
    BradOS Shell v3.0  ·  Ocean Dark Theme
    "Not purple. An actual desktop."
@@ -371,6 +389,65 @@ NotifyHistory {
     width: 100%;
     height: 100%;
     content-align: center middle;
+}
+
+/* ── Context Menu ──────────────────────── */
+
+ContextMenu { align: center middle; }
+
+#ctx-box {
+    width: auto;
+    height: auto;
+    background: #1a2740;
+    border: round #00d4ff;
+    padding: 0;
+    min-width: 28;
+}
+
+.ctx-item {
+    background: #1a2740;
+    border: none;
+    color: #ecf0f1;
+    height: 1;
+    padding: 0 2;
+    text-align: left;
+    width: 100%;
+}
+
+.ctx-item:hover {
+    background: #243450;
+    color: #00d4ff;
+}
+
+.ctx-sep {
+    height: 1;
+    background: #1e3a5f;
+    margin: 0 1;
+}
+
+/* ── Lock Screen ────────────────────────── */
+
+LockScreen { align: center middle; }
+
+#lock-box {
+    width: 50;
+    height: auto;
+    background: #1a2740;
+    border: double #00d4ff;
+    padding: 2 4;
+}
+
+#lock-icon { color: #00d4ff; text-style: bold; text-align: center; width: 100%; }
+#lock-msg { color: #7f8c8d; text-align: center; width: 100%; }
+#lock-input { width: 100%; }
+#lock-err { color: #ff4757; text-align: center; width: 100%; height: 1; }
+
+/* ── Workspace indicator ────────────────── */
+
+#workspace-indicator {
+    color: #7f8c8d;
+    width: auto;
+    padding: 0 1;
 }
 
 .task-btn {
@@ -1031,6 +1108,11 @@ _GitCommitModal {
 }
 """
 
+# Build SHELL_CSS by replacing hardcoded hex colors with CSS $var references
+SHELL_CSS = _RAW_CSS
+for _hex, _var in _CSS_COLORS.items():
+    SHELL_CSS = SHELL_CSS.replace(_hex, _var)
+
 # ── App manifest ──────────────────────────────────────────────────────────────
 
 APPS = [
@@ -1420,6 +1502,8 @@ class DesktopScreen(Screen):
         Binding("F1",      "open_help",        "Help"),
         Binding("F2",      "open_menu",        "Menu",  show=False),
         Binding("super",   "open_menu",        "Menu",  show=False),
+        Binding("F3",      "prev_workspace",   "WS ←", show=False),
+        Binding("F4",      "next_workspace",   "WS →", show=False),
         # App shortcuts
         Binding("t",       "launch('terminal')",  "Terminal",   show=False),
         Binding("b",       "launch('browser')",   "Browser",    show=False),
@@ -1445,6 +1529,7 @@ class DesktopScreen(Screen):
         with Horizontal(id="top-bar"):
             yield Static("⬡ BradOS", id="top-brand")
             yield Static("", id="top-spacer")
+            yield Static("WS 1", id="workspace-indicator")
             yield TopClock(id="top-clock")
             yield Static("", id="top-user")
 
@@ -1475,6 +1560,9 @@ class DesktopScreen(Screen):
     def on_mount(self) -> None:
         self._open_apps: set[str] = set()
         self._minimized: set[str] = set()
+        self._workspace = 1
+        self._total_workspaces = 4
+        self._update_ws_indicator()
         self.query_one("#top-user", Static).update(
             f"[bold #2ed573]● {self.app.user_profile.get('username', '?')}[/]"
         )
@@ -1483,12 +1571,80 @@ class DesktopScreen(Screen):
             widget.styles.opacity = 0.0
             widget.styles.animate("opacity", 1.0, duration=0.4, delay=i * 0.05)
         self.set_interval(3, self._pulse_icons)
+        self.set_interval(30, self._check_idle_lock)
+
+    def _update_ws_indicator(self) -> None:
+        try:
+            self.query_one("#workspace-indicator", Static).update(
+                f"[#7f8c8d]WS {self._workspace}/{self._total_workspaces}[/]"
+            )
+        except NoMatches:
+            pass
+
+    def action_next_workspace(self) -> None:
+        self._workspace = min(self._workspace + 1, self._total_workspaces)
+        self._update_ws_indicator()
+
+    def action_prev_workspace(self) -> None:
+        self._workspace = max(self._workspace - 1, 1)
+        self._update_ws_indicator()
+
+    def _check_idle_lock(self) -> None:
+        idle = time.time() - getattr(self.app, "_last_input", time.time())
+        if idle > 600 and not self.app._locked:  # 10 min idle → lock
+            self._lock_screen()
 
     # ── Message / button / click handlers ────────────────────────────────────
 
     @on(Click, "#top-brand")
     def _on_brand_click(self) -> None:
         self.action_open_menu()
+
+    @on(Click, ".icon-row, #desktop-area")
+    def _on_right_click(self, event: Click) -> None:
+        """Right-click on desktop background → context menu."""
+        if event.button != 3:
+            return
+        event.stop()
+        self._show_context_menu()
+
+    def on_key(self, event: Key) -> None:
+        """Track user input for idle detection."""
+        self.app._last_input = time.time()
+
+    def _show_context_menu(self) -> None:
+        def _on_choice(result: str | None) -> None:
+            if result is None:
+                return
+            if result == "__settings":
+                self._open("settings")
+            elif result == "__terminal":
+                self._open("terminal")
+            elif result == "__browser":
+                self._open("browser")
+            elif result == "__files":
+                self._open("files")
+            elif result == "__themes":
+                self._show_theme_picker()
+            elif result == "__lock":
+                self._lock_screen()
+            elif result == "__logout":
+                self.action_logout()
+            elif result == "__quit":
+                self.app.quit()
+        self.app.push_screen(ContextMenu(), _on_choice)
+
+    def _show_theme_picker(self) -> None:
+        def _on_choose(name: str | None) -> None:
+            if name:
+                self.app._set_theme(name)
+                save_config(self.app.config)
+        self.app.push_screen(ThemePicker(), _on_choose)
+
+    def _lock_screen(self) -> None:
+        """Push lock screen and mark shell as locked."""
+        self.app._locked = True
+        self.app.push_screen(LockScreen())
 
     def action_open_menu(self) -> None:
         def _on_choice(result: str | None) -> None:
@@ -1727,6 +1883,108 @@ class NotifyHistory(ModalScreen[None]):
                             Static(f"[{sev}] {msg}", classes="notify-msg"),
                             classes="notify-item",
                         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONTEXT MENU
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ContextMenu(ModalScreen[str]):
+    """Right-click context menu for the desktop."""
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "dismiss(None)", "Close"),
+    ]
+
+    ITEMS: ClassVar[list[tuple[str, str, str]]] = [
+        ("Open Terminal",   "__terminal"),
+        ("Open Browser",    "__browser"),
+        ("Open Files",      "__files"),
+        ("",                ""),  # separator
+        ("⚙ Settings",      "__settings"),
+        ("🎨 Change Theme", "__themes"),
+        ("🔒 Lock Screen",  "__lock"),
+        ("",                ""),
+        ("🔒 Logout",       "__logout"),
+        ("❌ Quit",         "__quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ctx-box"):
+            for label, action in self.ITEMS:
+                if not label:
+                    yield Static("", classes="ctx-sep")
+                else:
+                    yield Button(label, id=f"ctx-{action}", classes="ctx-item")
+
+    @on(Button.Pressed)
+    def _on_click(self, event: Button.Pressed) -> None:
+        if event.button.id and event.button.id.startswith("ctx-"):
+            self.dismiss(event.button.id[4:])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOCK SCREEN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class LockScreen(Screen):
+    """Password-protected lock screen."""
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "app.quit", "Quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="lock-box"):
+            yield Static("🔒", id="lock-icon")
+            yield Static("BradOS Locked", id="lock-msg")
+            yield Static("Enter password to unlock", id="lock-sub")
+            yield Input(password=True, placeholder="Password", id="lock-input")
+            yield Static("", id="lock-err")
+
+    def on_mount(self) -> None:
+        self.query_one("#lock-input", Input).focus()
+
+    @on(Input.Submitted, "#lock-input")
+    def _on_submit(self, event: Input.Submitted) -> None:
+        pwd = event.value.strip()
+        profile = self.app.user_profile or {}
+        saved = profile.get("password", "")
+        if not saved:
+            self.dismiss()
+        elif pwd == saved:
+            self.dismiss()
+        else:
+            self.query_one("#lock-err", Static).update("⚠ Wrong password")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# THEME PICKER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ThemePicker(ModalScreen[str]):
+    """Quick theme switcher overlay."""
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "dismiss(None)", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ctx-box"):
+            yield Static("[bold #00d4ff]  Select Theme[/]", id="theme-title")
+            for name, theme in THEMES.items():
+                current = self.app._theme.get("name") == theme["name"]
+                marker = "●" if current else "○"
+                yield Button(
+                    f"{marker} {theme['name']}",
+                    id=f"theme-{name}",
+                    classes="ctx-item",
+                )
+
+    @on(Button.Pressed)
+    def _on_choose(self, event: Button.Pressed) -> None:
+        if event.button.id and event.button.id.startswith("theme-"):
+            self.dismiss(event.button.id[6:])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5665,6 +5923,7 @@ class MeshWindow(BradWindow):
                     yield RichLog(id="mesh-chat-log", markup=True, highlight=True)
                     with Horizontal(id="mesh-chat-bar"):
                         yield Input(placeholder="Type a message…", id="mesh-chat-input")
+                        yield Button("📁 File", id="mesh-file-send", variant="default")
                         yield Button("Send", id="mesh-chat-send", variant="primary")
 
     def on_mount(self) -> None:
@@ -5751,10 +6010,36 @@ class MeshWindow(BradWindow):
             self._switch_view("chat")
         elif bid == "mesh-chat-send":
             self._send_message()
+        elif bid == "mesh-file-send":
+            self._send_file()
 
     @on(Input.Submitted, "#mesh-chat-input")
     def _input_submitted(self) -> None:
         self._send_message()
+
+    def _send_file(self) -> None:
+        """Pick a VFS file and send it to the selected peer."""
+        if not self._selected_peer:
+            self.notify("Select a peer from the Peers view first.", severity="warning")
+            return
+
+        def _on_path(path: str | None) -> None:
+            if not path:
+                return
+            try:
+                data = self.app.vfs.read(path)
+                fname = path.rstrip("/").split("/")[-1]
+                self._mesh.send_file(self._selected_peer, fname, data)
+                self.notify(f"📁 Sent {fname} ({len(data)} bytes)", severity="information")
+                try:
+                    log = self.query_one("#mesh-chat-log", RichLog)
+                    log.write(f"[#ffa502]<file>[/] Sent {fname} to {self._selected_peer.hostname}")
+                except NoMatches:
+                    pass
+            except Exception as e:
+                self.notify(f"⚠ File send failed: {e}", severity="error")
+
+        self.app.push_screen(_FilePickerModal("Send File", "open"), _on_path)
 
     @on(ListView.Selected, "#mesh-peer-list")
     def _on_peer_selected(self, event: ListView.Selected) -> None:
@@ -5998,7 +6283,7 @@ class _PromptModal(ModalScreen):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class BradOSShell(App):
-    TITLE    = "BradOS v3.0 — Ocean Dark"
+    TITLE    = "BradOS v3.0"
     CSS      = SHELL_CSS
     BINDINGS: ClassVar = [Binding("ctrl+q", "quit", "Quit")]
 
@@ -6007,22 +6292,34 @@ class BradOSShell(App):
     drivers      : DriverRegistry    | None = None
     security     : BradSec | None = None
 
+    def __init__(self):
+        super().__init__()
+        self.config = load_config()
+
     def on_mount(self) -> None:
         init_dirs()
         self.vfs      = create_default_vfs(kernel=self.kernel)
         self.drivers  = create_default_registry(vfs=self.vfs)
         self.security = get_bradsec()
         self.security.start()
+        # Load config & apply theme
+        self.config = load_config()
+        self._set_theme(self.config.get("theme", "ocean_dark"))
         # Start BradSec daemon for IPC and background monitoring
         daemon = get_bradsec_daemon()
         daemon.start()
         self._notifications: list[tuple[str, str, str]] = []
+        self._last_input: float = time.time()
+        self._locked: bool = False
         daemon.on_alert(lambda findings: self.call_from_thread(
             self._notify_and_store, f"⚠ {len(findings)} security alert(s)", severity="error"
         ))
         # Start mesh networking
         self._mesh = get_mesh()
         self._mesh.start()
+        self._mesh.on("file_transfer", lambda msg, addr: self.call_from_thread(
+            self._on_file_received, msg, addr
+        ))
         self.packages = get_bpkg()
         for path in ["/home", "/tmp"]:
             try:
@@ -6036,6 +6333,47 @@ class BradOSShell(App):
         ts = datetime.now().strftime("%H:%M:%S")
         self._notifications.append((ts, message, severity))
         self.notify(message, severity=severity)
+
+    def _set_theme(self, theme_name: str) -> None:
+        """Apply a named theme via CSS variables."""
+        theme = THEMES.get(theme_name, THEMES["ocean_dark"])
+        self.config["theme"] = theme_name
+        self._theme = theme
+        self.stylesheet.set_variables(dict(theme))
+        self.refresh_css()
+        self.title = f"BradOS v3.0 — {theme['name']}"
+
+    def get_css_variables(self) -> dict[str, str]:
+        """Expose theme colors as CSS $variables."""
+        vars = super().get_css_variables()
+        if hasattr(self, '_theme'):
+            vars.update(self._theme)
+        return vars
+
+    def _update_idle(self) -> None:
+        self._last_input = time.time()
+
+    def _on_file_received(self, msg: dict, addr: tuple) -> None:
+        """Handle incoming file transfer from mesh peer."""
+        import base64
+        payload = msg.get("payload", {})
+        filename = payload.get("filename", "unknown.bin")
+        content = payload.get("content", "")
+        size = payload.get("size", 0)
+        sender = msg.get("sender", "?")[:8]
+        try:
+            data = base64.b64decode(content)
+            dest = f"/home/{filename}"
+            self.vfs.write(dest, data)
+            self._notify_and_store(
+                f"📁 File received from {sender}: {filename} ({size} bytes)",
+                severity="information"
+            )
+        except Exception as e:
+            self._notify_and_store(
+                f"⚠ File receive failed from {sender}: {e}",
+                severity="error"
+            )
 
 
 def run_shell(kernel=None) -> None:

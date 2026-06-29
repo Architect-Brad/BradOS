@@ -316,6 +316,111 @@ def save_user_profile(profile: dict):
     ensure_dirs()
     atomic_write_json(get_profile_path(profile["username"]), profile)
 
+# ── BradOS Configuration ──────────────────────────────────────────────────────
+
+CONFIG_PATH = os.path.join(BRADOS_FILES_DIR, "brados.json")
+
+CONFIG_DEFAULTS: dict = {
+    "theme": "ocean_dark",
+    "startup_apps": [],
+    "wallpaper": "",
+    "icon_order": {},
+    "desktop": {
+        "show_hints": True,
+    },
+    "security": {
+        "auto_start": True,
+        "scan_interval": 30,
+    },
+}
+
+THEMES: dict[str, dict[str, str]] = {
+    "ocean_dark": {
+        "name":       "Ocean Dark",
+        "bg_deep":    "#060d17",
+        "bg_base":    "#0d1b2a",
+        "bg_mid":     "#1a2740",
+        "bg_light":   "#243450",
+        "accent":     "#00d4ff",
+        "text":       "#ecf0f1",
+        "muted":      "#7f8c8d",
+        "border":     "#1e3a5f",
+        "success":    "#2ed573",
+        "warning":    "#ffa502",
+        "danger":     "#ff4757",
+    },
+    "ocean_light": {
+        "name":       "Ocean Light",
+        "bg_deep":    "#e8f4f8",
+        "bg_base":    "#f0f8fc",
+        "bg_mid":     "#d4eaf0",
+        "bg_light":   "#b8dce6",
+        "accent":     "#0077b6",
+        "text":       "#1a1a2e",
+        "muted":      "#6c757d",
+        "border":     "#90caf9",
+        "success":    "#2ecc71",
+        "warning":    "#f39c12",
+        "danger":     "#e74c3c",
+    },
+    "monokai": {
+        "name":       "Monokai",
+        "bg_deep":    "#1e1f1c",
+        "bg_base":    "#272822",
+        "bg_mid":     "#383830",
+        "bg_light":   "#49483e",
+        "accent":     "#a6e22e",
+        "text":       "#f8f8f2",
+        "muted":      "#75715e",
+        "border":     "#49483e",
+        "success":    "#a6e22e",
+        "warning":    "#e6db74",
+        "danger":     "#f92672",
+    },
+    "dracula": {
+        "name":       "Dracula",
+        "bg_deep":    "#191a21",
+        "bg_base":    "#282a36",
+        "bg_mid":     "#3c3f51",
+        "bg_light":   "#4d4f68",
+        "accent":     "#bd93f9",
+        "text":       "#f8f8f2",
+        "muted":      "#6272a4",
+        "border":     "#44475a",
+        "success":    "#50fa7b",
+        "warning":    "#f1fa8c",
+        "danger":     "#ff5555",
+    },
+}
+
+
+def load_config() -> dict:
+    """Load brados.json config, merging with defaults."""
+    ensure_dirs()
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            for k, v in CONFIG_DEFAULTS.items():
+                data.setdefault(k, v)
+            return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return dict(CONFIG_DEFAULTS)
+
+
+def save_config(config: dict) -> None:
+    """Persist config atomically."""
+    ensure_dirs()
+    atomic_write_json(CONFIG_PATH, config)
+
+
+def resolve_theme(config: dict) -> dict[str, str]:
+    """Return the full theme dict for the configured theme name."""
+    name = config.get("theme", "ocean_dark")
+    return THEMES.get(name, THEMES["ocean_dark"])
+
+
 # ── Backup & monitoring ───────────────────────────────────────────────────────
 
 def backup_user_profiles() -> str | None:
