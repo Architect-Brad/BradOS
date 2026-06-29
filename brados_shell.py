@@ -228,6 +228,151 @@ AppIconWidget.running {
 #taskbar-apps { width: 1fr; height: 3; align: left middle; }
 #taskbar-tray { width: auto; height: 3; align: right middle; padding: 0 1; }
 
+/* ── Notification Bell ─────────────────── */
+
+#tray-bell {
+    color: #7f8c8d;
+    width: auto;
+    padding: 0 1;
+}
+
+#tray-bell:hover {
+    color: #00d4ff;
+}
+
+/* ── Start Menu ────────────────────────── */
+
+StartMenu {
+    align: center top;
+}
+
+#start-menu {
+    width: 68;
+    height: 34;
+    background: #1a2740;
+    border: round #00d4ff;
+    layer: overlay;
+    margin: 1 0 0 0;
+}
+
+#start-search {
+    width: 100%;
+    height: 3;
+    margin: 0 0 1 0;
+}
+
+#start-search Input {
+    background: #0d1b2a;
+    border: solid #1e3a5f;
+    color: #ecf0f1;
+}
+
+#start-cats {
+    height: 3;
+    align: left middle;
+    padding: 0 0 1 0;
+}
+
+.cat-btn {
+    background: #243450;
+    border: none;
+    color: #7f8c8d;
+    height: 1;
+    min-width: 10;
+    margin: 0 1 0 0;
+}
+
+.cat-btn.-active {
+    color: #00d4ff;
+    text-style: bold;
+}
+
+#start-grid {
+    width: 100%;
+    height: 9;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.start-app {
+    width: 1fr;
+    height: 4;
+    background: #0d1b2a;
+    border: solid #1e3a5f;
+    content-align: center middle;
+    text-align: center;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+.start-app:hover {
+    background: #243450;
+    border: solid #00d4ff;
+}
+
+#start-actions {
+    height: 3;
+    align: left middle;
+    border-top: solid #1e3a5f;
+    padding: 0 1;
+}
+
+.start-action {
+    background: #243450;
+    border: none;
+    color: #ecf0f1;
+    height: 1;
+    min-width: 12;
+    margin: 0 2 0 0;
+}
+
+.start-action:hover {
+    color: #00d4ff;
+    text-style: bold;
+}
+
+/* ── Notification History ──────────────── */
+
+NotifyHistory {
+    align: center middle;
+}
+
+#notify-box {
+    width: 80;
+    height: 70%;
+    background: #1a2740;
+    border: round #00d4ff;
+}
+
+#notify-list {
+    width: 100%;
+    height: 1fr;
+}
+
+.notify-item {
+    height: auto;
+    padding: 0 1;
+    color: #ecf0f1;
+}
+
+.notify-time {
+    color: #7f8c8d;
+    text-style: bold;
+    width: 14;
+}
+
+.notify-msg {
+    width: 1fr;
+}
+
+#notify-empty {
+    color: #7f8c8d;
+    text-align: center;
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+}
+
 .task-btn {
     background: #1a2740;
     border: round #1e3a5f;
@@ -890,36 +1035,36 @@ _GitCommitModal {
 
 APPS = [
     # Row 1 — core tools
-    {"id": "terminal",   "icon": "⌨",  "name": "Terminal",   "desc": "Shell & cmds"},
-    {"id": "browser",    "icon": "◉",  "name": "Browser",    "desc": "Web + tabs"},
-    {"id": "files",      "icon": "◫",  "name": "Files",      "desc": "VFS manager"},
-    {"id": "editor",     "icon": "▤",  "name": "Editor",     "desc": "Code editor"},
+    {"id": "terminal",   "icon": "⌨",  "name": "Terminal",   "desc": "Shell & cmds",   "cat": "System"},
+    {"id": "browser",    "icon": "◉",  "name": "Browser",    "desc": "Web + tabs",    "cat": "Productivity"},
+    {"id": "files",      "icon": "◫",  "name": "Files",      "desc": "VFS manager",   "cat": "Productivity"},
+    {"id": "editor",     "icon": "▤",  "name": "Editor",     "desc": "Code editor",   "cat": "Productivity"},
     # Row 2 — productivity
-    {"id": "mail",       "icon": "⊠",  "name": "Mail",       "desc": "BradMail"},
-    {"id": "notes",      "icon": "✎",  "name": "Notes",      "desc": "Sticky notes"},
-    {"id": "calculator", "icon": "⌗",  "name": "Calc",       "desc": "Math + sci"},
-    {"id": "clock",      "icon": "◷",  "name": "Clock",      "desc": "Time & timer"},
+    {"id": "mail",       "icon": "⊠",  "name": "Mail",       "desc": "BradMail",      "cat": "Productivity"},
+    {"id": "notes",      "icon": "✎",  "name": "Notes",      "desc": "Sticky notes",  "cat": "Productivity"},
+    {"id": "calculator", "icon": "⌗",  "name": "Calc",       "desc": "Math + sci",    "cat": "Utilities"},
+    {"id": "clock",      "icon": "◷",  "name": "Clock",      "desc": "Time & timer",  "cat": "Utilities"},
     # Row 3 — system
-    {"id": "monitor",    "icon": "⊞",  "name": "Monitor",    "desc": "CPU / RAM"},
-    {"id": "logs",       "icon": "≡",  "name": "Logs",       "desc": "System logs"},
-    {"id": "kernel",     "icon": "⧉",  "name": "Kernel",     "desc": "Tasks & VFS"},
-    {"id": "settings",   "icon": "⊕",  "name": "Settings",   "desc": "Config"},
+    {"id": "monitor",    "icon": "⊞",  "name": "Monitor",    "desc": "CPU / RAM",     "cat": "System"},
+    {"id": "logs",       "icon": "≡",  "name": "Logs",       "desc": "System logs",   "cat": "System"},
+    {"id": "kernel",     "icon": "⧉",  "name": "Kernel",     "desc": "Tasks & VFS",   "cat": "System"},
+    {"id": "settings",   "icon": "⊕",  "name": "Settings",   "desc": "Config",        "cat": "System"},
     # Row 4 — security & packages
-    {"id": "bradsec",    "icon": "⊛",  "name": "BradSec",    "desc": "Security"},
-    {"id": "bpkg",       "icon": "⬡",  "name": "bpkg",       "desc": "Packages"},
+    {"id": "bradsec",    "icon": "⊛",  "name": "BradSec",    "desc": "Security",      "cat": "System"},
+    {"id": "bpkg",       "icon": "⬡",  "name": "bpkg",       "desc": "Packages",      "cat": "System"},
     # Row 5 — creative & tools
-    {"id": "paint",      "icon": "🎨",  "name": "Paint",     "desc": "Pixel editor"},
-    {"id": "converter",  "icon": "⇄",  "name": "Converter",  "desc": "Unit converter"},
-    {"id": "rss",        "icon": "◉",  "name": "RSS Reader", "desc": "Feed reader"},
+    {"id": "paint",      "icon": "🎨",  "name": "Paint",     "desc": "Pixel editor",  "cat": "Creative"},
+    {"id": "converter",  "icon": "⇄",  "name": "Converter",  "desc": "Unit converter","cat": "Utilities"},
+    {"id": "rss",        "icon": "◉",  "name": "RSS Reader", "desc": "Feed reader",   "cat": "Productivity"},
     # Row 6 — new apps
-    {"id": "snake",      "icon": "🐍",  "name": "Snake Game", "desc": "Classic snake"},
-    {"id": "vault",      "icon": "🔐",  "name": "Vault",      "desc": "Password manager"},
-    {"id": "weather",    "icon": "🌤",  "name": "Weather",    "desc": "Forecast"},
+    {"id": "snake",      "icon": "🐍",  "name": "Snake Game", "desc": "Classic snake", "cat": "Games"},
+    {"id": "vault",      "icon": "🔐",  "name": "Vault",      "desc": "Password manager","cat":"Utilities"},
+    {"id": "weather",    "icon": "🌤",  "name": "Weather",    "desc": "Forecast",     "cat": "Utilities"},
     # Row 7 — games & tools
-    {"id": "minesweeper","icon": "💣",  "name": "Minesweeper","desc": "Classic mines"},
-    {"id": "game2048",   "icon": "🎲",  "name": "2048",       "desc": "Tile game"},
-    {"id": "markdown",   "icon": "📝",  "name": "Markdown",   "desc": "MD preview"},
-    {"id": "mesh",       "icon": "🕸",  "name": "Mesh",       "desc": "P2P network"},
+    {"id": "minesweeper","icon": "💣",  "name": "Minesweeper","desc": "Classic mines","cat": "Games"},
+    {"id": "game2048",   "icon": "🎲",  "name": "2048",       "desc": "Tile game",    "cat": "Games"},
+    {"id": "markdown",   "icon": "📝",  "name": "Markdown",   "desc": "MD preview",   "cat": "Productivity"},
+    {"id": "mesh",       "icon": "🕸",  "name": "Mesh",       "desc": "P2P network",  "cat": "Network"},
 ]
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -1199,6 +1344,29 @@ class SecIndicator(Static):
         return f"[#00d4ff]{self._dot} sec[/]"
 
 
+class NotifBell(Static):
+    """Notification bell in the system tray — click to view history."""
+
+    def on_mount(self) -> None:
+        self._count = 0
+        self._update()
+        self.set_interval(2, self._update)
+
+    def _update(self) -> None:
+        n = len(getattr(self.app, "_notifications", []))
+        if n != self._count:
+            self._count = n
+            bell = "🔔" if n > 0 else "🔕"
+            cnt  = f" [bold #00d4ff]{n}[/]" if n > 0 else ""
+            self.update(f"{bell}{cnt}")
+
+    def on_click(self) -> None:
+        self.app.push_screen(NotifyHistory())
+
+    def watch_notifications(self) -> None:
+        self._update()
+
+
 class AppIconWidget(Static):
     DEFAULT_CSS = """
     AppIconWidget {
@@ -1250,6 +1418,8 @@ class DesktopScreen(Screen):
         Binding("q",       "app.quit",        "Quit"),
         Binding("l",       "logout",           "Logout"),
         Binding("F1",      "open_help",        "Help"),
+        Binding("F2",      "open_menu",        "Menu",  show=False),
+        Binding("super",   "open_menu",        "Menu",  show=False),
         # App shortcuts
         Binding("t",       "launch('terminal')",  "Terminal",   show=False),
         Binding("b",       "launch('browser')",   "Browser",    show=False),
@@ -1296,6 +1466,7 @@ class DesktopScreen(Screen):
             with Horizontal(id="taskbar-apps"):
                 yield Static("[#1e3a5f]No apps open[/]", id="taskbar-placeholder")
             with Horizontal(id="taskbar-tray"):
+                yield NotifBell(id="tray-bell")
                 yield SecIndicator(id="tray-sec")
                 yield TrayStats(id="tray-stats")
                 yield Static("", id="tray-sep")
@@ -1305,7 +1476,7 @@ class DesktopScreen(Screen):
         self._open_apps: set[str] = set()
         self._minimized: set[str] = set()
         self.query_one("#top-user", Static).update(
-            f"[#2ed573]● {self.app.user_profile.get('username', '?')}[/]"
+            f"[bold #2ed573]● {self.app.user_profile.get('username', '?')}[/]"
         )
         # Staggered icon entrance animation
         for i, widget in enumerate(self.query(AppIconWidget)):
@@ -1313,7 +1484,27 @@ class DesktopScreen(Screen):
             widget.styles.animate("opacity", 1.0, duration=0.4, delay=i * 0.05)
         self.set_interval(3, self._pulse_icons)
 
-    # ── Message / button handlers ─────────────────────────────────────────────
+    # ── Message / button / click handlers ────────────────────────────────────
+
+    @on(Click, "#top-brand")
+    def _on_brand_click(self) -> None:
+        self.action_open_menu()
+
+    def action_open_menu(self) -> None:
+        def _on_choice(result: str | None) -> None:
+            if result is None:
+                return
+            if result == "__settings":
+                self._open("settings")
+            elif result == "__logout":
+                self.action_logout()
+            elif result == "__quit":
+                self.app.quit()
+            elif result == "__help":
+                self.action_open_help()
+            else:
+                self._open(result)
+        self.app.push_screen(StartMenu(), _on_choice)
 
     def on_launch_app(self, message: LaunchApp) -> None:
         self._open(message.app_id)
@@ -1414,6 +1605,128 @@ class DesktopScreen(Screen):
             if aid in self._open_apps:
                 bg = "#243450" if self._icon_pulse else "#1a2740"
                 widget.styles.background = bg
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# START MENU
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StartMenu(ModalScreen[str]):
+    """App launcher overlay with search, category filter, and system actions."""
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "dismiss(None)", "Close"),
+    ]
+
+    CATEGORIES = ["All", "System", "Productivity", "Utilities", "Creative", "Games", "Network"]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="start-menu"):
+            yield Input(placeholder="🔍 Search apps...", id="start-search")
+            with Horizontal(id="start-cats"):
+                for cat in self.CATEGORIES:
+                    yield Button(cat, id=f"cat-{cat.lower()}",
+                                 classes="cat-btn -active" if cat == "All" else "cat-btn")
+            with ScrollableContainer(id="start-grid"):
+                yield from self._build_grid()
+            with Horizontal(id="start-actions"):
+                yield Button("⚙ Settings", id="act-settings", classes="start-action")
+                yield Button("🔒 Logout",  id="act-logout",  classes="start-action")
+                yield Button("❌ Quit",    id="act-quit",    classes="start-action")
+                yield Button("? Help",     id="act-help",    classes="start-action")
+
+    def on_mount(self) -> None:
+        self.query_one("#start-search", Input).focus()
+
+    def _build_grid(self, query: str = "", cat: str = "All") -> list:
+        q = query.lower().strip()
+        filtered = APPS
+        if q:
+            filtered = [a for a in APPS if q in a["name"].lower() or q in a["desc"].lower()]
+        elif cat != "All":
+            filtered = [a for a in APPS if a.get("cat") == cat]
+        widgets: list = []
+        if not filtered:
+            widgets.append(Static("[#7f8c8d]No matching apps[/]", id="start-empty"))
+        else:
+            for i in range(0, len(filtered), 4):
+                row_widgets: list = []
+                for app in filtered[i:i+4]:
+                    row_widgets.append(
+                        Button(f"{app['icon']}\n{app['name']}",
+                               id=f"start-{app['id']}", classes="start-app")
+                    )
+                widgets.append(Horizontal(*row_widgets, classes="start-app-row"))
+        return widgets
+
+    def _rebuild_grid(self, query: str = "", cat: str = "All") -> None:
+        grid = self.query_one("#start-grid", ScrollableContainer)
+        grid.remove_children()
+        for w in self._build_grid(query, cat):
+            grid.mount(w)
+
+    @on(Input.Changed, "#start-search")
+    def _on_search(self, event: Input.Changed) -> None:
+        self._rebuild_grid(event.value)
+
+    @on(Button.Pressed, ".cat-btn")
+    def _on_cat(self, event: Button.Pressed) -> None:
+        # Update active class
+        for b in self.query(".cat-btn"):
+            b.classes = b.classes.replace(" -active", "")
+            b.styles.text_style = ""
+            b.styles.color = "#7f8c8d"
+        event.button.classes += " -active"
+        event.button.styles.text_style = "bold"
+        event.button.styles.color = "#00d4ff"
+        cat = event.button.label
+        query = self.query_one("#start-search", Input).value
+        self._rebuild_grid(query, cat)
+
+    @on(Button.Pressed, ".start-app")
+    def _on_launch(self, event: Button.Pressed) -> None:
+        if event.button.id and event.button.id.startswith("start-"):
+            app_id = event.button.id[6:]
+            self.dismiss(app_id)
+
+    @on(Button.Pressed, ".start-action")
+    def _on_action(self, event: Button.Pressed) -> None:
+        action = event.button.id
+        if action == "act-settings":
+            self.dismiss("__settings")
+        elif action == "act-logout":
+            self.dismiss("__logout")
+        elif action == "act-quit":
+            self.dismiss("__quit")
+        elif action == "act-help":
+            self.dismiss("__help")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NOTIFICATION HISTORY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class NotifyHistory(ModalScreen[None]):
+    """Shows past notifications with timestamps."""
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "dismiss(None)", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="notify-box"):
+            yield Static("[bold #00d4ff]Notification History[/]", id="notify-title")
+            with ScrollableContainer(id="notify-list"):
+                history = getattr(self.app, "_notifications", [])
+                if not history:
+                    yield Static("No notifications yet", id="notify-empty")
+                else:
+                    for ts, msg, sev in reversed(history):
+                        yield Horizontal(
+                            Static(ts, classes="notify-time"),
+                            Static(f"[{sev}] {msg}", classes="notify-msg"),
+                            classes="notify-item",
+                        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5703,8 +6016,9 @@ class BradOSShell(App):
         # Start BradSec daemon for IPC and background monitoring
         daemon = get_bradsec_daemon()
         daemon.start()
+        self._notifications: list[tuple[str, str, str]] = []
         daemon.on_alert(lambda findings: self.call_from_thread(
-            self.notify, f"⚠ {len(findings)} security alert(s)", severity="error"
+            self._notify_and_store, f"⚠ {len(findings)} security alert(s)", severity="error"
         ))
         # Start mesh networking
         self._mesh = get_mesh()
@@ -5716,6 +6030,12 @@ class BradOSShell(App):
             except Exception:
                 pass
         self.push_screen(SplashScreen())
+
+    def _notify_and_store(self, message: str, severity: str = "information") -> None:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._notifications.append((ts, message, severity))
+        self.notify(message, severity=severity)
 
 
 def run_shell(kernel=None) -> None:
