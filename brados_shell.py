@@ -24,6 +24,7 @@ import string
 import urllib.request
 import urllib.parse
 from datetime import datetime
+from functools import partial
 from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
@@ -1437,7 +1438,7 @@ class BradWindow(Screen):
 
     def dismiss(self, result=None) -> None:
         self.styles.animate("opacity", 0.0, duration=0.15)
-        self.set_timer(0.18, self._finish_dismiss, result)
+        self.set_timer(0.18, partial(self._finish_dismiss, result))
 
     def _finish_dismiss(self, result=None) -> None:
         super().dismiss(result)

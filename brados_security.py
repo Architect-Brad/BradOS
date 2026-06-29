@@ -183,12 +183,13 @@ class IntegrityDaemon:
     MANIFEST_PATH = "brados_integrity.json"
     WATCHED_EXTS  = {".py", ".json", ".log"}
     WATCHED_DIRS  = ["."]
-    IGNORE        = {"__pycache__", ".git", "backup_", "brados_integrity.json"}
+    IGNORE        = {"__pycache__", ".git", "backup_", "brados_integrity.json", "brados_audit.log"}
 
     def __init__(self, audit: AuditLog):
         self._audit    = audit
         self._manifest : dict[str, str] = {}
         self._lock     = threading.Lock()
+        self._ignore_files = {"brados_audit.log", "brados_integrity.json"}
 
     def _hash_file(self, path: str) -> str:
         """SHA-256 of file contents in 64 KB chunks."""
@@ -208,6 +209,8 @@ class IntegrityDaemon:
                 dirs[:] = [dd for dd in dirs
                            if not any(ig in dd for ig in self.IGNORE)]
                 for fname in fnames:
+                    if fname in self._ignore_files:
+                        continue
                     if any(fname.endswith(ext) for ext in self.WATCHED_EXTS):
                         files.append(os.path.join(root, fname))
         return files

@@ -1,0 +1,23 @@
+
+policies:
+  # Per-process capability policies
+  # on_violation: kill | warn | quarantine
+  mail-server:
+    caps: [NET_BIND, NET_SEND, FS_READ, FS_WRITE]
+    on_violation: kill
+  bpkg:
+    caps: [FS_READ, FS_WRITE, PROC_FORK]
+    on_violation: warn
+  editor:
+    caps: [FS_READ, FS_WRITE]
+    on_violation: warn
+  terminal:
+    caps: [FS_READ, FS_WRITE, NET_SEND, PROC_FORK]
+    on_violation: warn
+  guest:
+    caps: [FS_READ, NET_SEND]
+    on_violation: kill
+
+auto_response:
+  tampered_files: quarantine   # quarantine | warn | restore
+  suspicious_ports: warn       # kill_process | warn
