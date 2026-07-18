@@ -191,13 +191,14 @@ class BradOSKernel:
         self.network_bus       : queue.Queue     = queue.Queue()
         self._pipes            : dict[str, queue.Queue] = {}
         self._shmem            : dict[str, Any]  = {}
-        self._real_procs       : dict[int, subprocess.Popen] = {}
         self._shutdown         : threading.Event = threading.Event()
         self._lock             = threading.Lock()
 
         # Subsystems attached by the shell/boot code
         self.vfs               = None   # VirtualFileSystem | None
         self.drivers           = None   # DriverRegistry    | None
+        self.sec               = None   # BradSec           | None
+        self.proc_mgr          = None   # ProcessManager    | None
 
         self.load_user_database()
         logger.info("BradOS kernel v3.0 initialised")
@@ -287,6 +288,13 @@ class BradOSKernel:
         self.next_pid += 1
         proc = Process(pid, name, gen, user=user_name, uid=uid, nice=nice)
         self.tasks.append(proc)
+        # Issue a capability token via BradSec if available
+        if self.sec is not None:
+            from brados_security import Cap
+            caps = Cap.default_user()
+            if uid == 0:
+                caps = Cap.ADMIN
+            self.sec.issue_token(pid, uid, caps=caps)
         logger.info(f"Task '{name}' (pid={pid}) created by {user_name} nice={nice}")
         return pid
 
@@ -302,12 +310,25 @@ class BradOSKernel:
         return False
 
     def list_tasks(self) -> list[dict]:
-        return [
+        tasks = [
             {"pid": p.pid, "name": p.name, "user": p.user, "state": p.state,
              "cpu_s": round(p.cpu_time, 3), "uptime_s": round(p.uptime, 1),
              "nice": p.nice, "mem_bytes": p.mem_bytes}
             for p in self.tasks
         ]
+        if self.proc_mgr:
+            for mp_info in self.proc_mgr.list():
+                tasks.append({
+                    "pid": mp_info["pid"],
+                    "name": mp_info["name"],
+                    "user": "proc",
+                    "state": "running" if mp_info["alive"] else "exited",
+                    "cpu_s": 0.0,
+                    "uptime_s": round(time.time() - mp_info["created_at"], 1),
+                    "nice": 0,
+                    "mem_bytes": 0,
+                })
+        return tasks
 
     # ── Syscall dispatcher ────────────────────────────────────────────────────
 
@@ -378,14 +399,14 @@ class BradOSKernel:
                 try: return os.listdir(args[0] if args else ".")
                 except OSError as e: return e
 
-            # ── VFS syscalls ──────────────────────────────────────────────────
+            # ── VFS syscalls (capability-checked via BradSec) ─────────────────
 
             case SC.VFS_READ:
                 if not self.check_permission(proc.uid, Perm.READ):
                     return PermissionError("vfs read denied")
                 if not self.vfs:
                     return OSError("VFS not mounted")
-                try: return self.vfs.read(args[0])
+                try: return self.vfs.read(args[0], caller_pid=proc.pid)
                 except Exception as e: return e
 
             case SC.VFS_WRITE:
@@ -394,7 +415,7 @@ class BradOSKernel:
                 if not self.vfs:
                     return OSError("VFS not mounted")
                 try:
-                    n = self.vfs.write(args[0], args[1])
+                    n = self.vfs.write(args[0], args[1], caller_pid=proc.pid)
                     proc.mem_bytes += n
                     return n
                 except Exception as e: return e
@@ -404,13 +425,13 @@ class BradOSKernel:
                     return PermissionError("vfs list denied")
                 if not self.vfs:
                     return OSError("VFS not mounted")
-                try: return self.vfs.listdir(args[0] if args else "/")
+                try: return self.vfs.listdir(args[0] if args else "/", caller_pid=proc.pid)
                 except Exception as e: return e
 
             case SC.VFS_STAT:
                 if not self.vfs: return OSError("VFS not mounted")
                 try:
-                    s = self.vfs.stat(args[0])
+                    s = self.vfs.stat(args[0], caller_pid=proc.pid)
                     return {
                         "name": s.name, "type": s.type, "size": s.size,
                         "mode": s.mode_str, "mtime": s.mtime,
@@ -421,14 +442,14 @@ class BradOSKernel:
                 if not self.check_permission(proc.uid, Perm.WRITE):
                     return PermissionError("vfs mkdir denied")
                 if not self.vfs: return OSError("VFS not mounted")
-                try: self.vfs.mkdir(args[0]); return 0
+                try: self.vfs.mkdir(args[0], caller_pid=proc.pid); return 0
                 except Exception as e: return e
 
             case SC.VFS_UNLINK:
                 if not self.check_permission(proc.uid, Perm.WRITE):
                     return PermissionError("vfs unlink denied")
                 if not self.vfs: return OSError("VFS not mounted")
-                try: self.vfs.unlink(args[0]); return 0
+                try: self.vfs.unlink(args[0], caller_pid=proc.pid); return 0
                 except Exception as e: return e
 
             # ── Networking (via NetworkDriver) ────────────────────────────────
@@ -488,7 +509,7 @@ class BradOSKernel:
                 try: return drv.ioctl(int(args[1]), args[2] if len(args) > 2 else None)
                 except NotImplementedError as e: return e
 
-            # ── Real subprocess (FORK / WAIT) ─────────────────────────────────
+            # ── Real subprocess (FORK / WAIT / SIGNAL) ─────────────────────────
 
             case SC.FORK:
                 if not self.check_permission(proc.uid, Perm.PROC):
@@ -496,14 +517,10 @@ class BradOSKernel:
                 cmd_args = list(args[0])
                 cwd      = str(args[1]) if len(args) > 1 else None
                 try:
-                    p = subprocess.Popen(
-                        cmd_args,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        cwd=cwd,
-                    )
-                    with self._lock:
-                        self._real_procs[p.pid] = p
+                    if self.proc_mgr:
+                        return self.proc_mgr.spawn(cmd_args, cwd=cwd)
+                    p = subprocess.Popen(cmd_args, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, cwd=cwd)
                     return p.pid
                 except Exception as e:
                     return e
@@ -511,20 +528,22 @@ class BradOSKernel:
             case SC.WAIT:
                 pid     = int(args[0])
                 timeout = float(args[1]) if len(args) > 1 else None
-                with self._lock:
-                    p = self._real_procs.get(pid)
-                if not p:
-                    return ProcessLookupError(f"No real process {pid}")
-                try:
-                    out, err = p.communicate(timeout=timeout)
-                    with self._lock:
-                        self._real_procs.pop(pid, None)
-                    return (p.returncode,
-                            out.decode(errors="replace"),
-                            err.decode(errors="replace"))
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    return (-1, "", "timeout")
+                if self.proc_mgr:
+                    result = self.proc_mgr.wait(pid, timeout=timeout)
+                    if result is None:
+                        return ProcessLookupError(f"No real process {pid}")
+                    return (result["returncode"], "", "")
+                return (-1, "", "process manager unavailable")
+
+            case SC.SIGNAL:
+                target_pid, sig_val = int(args[0]), args[1]
+                if self.proc_mgr and self.proc_mgr.signal(target_pid, sig_val):
+                    return 0
+                for p in self.tasks:
+                    if p.pid == target_pid:
+                        p.signals.append(sig_val)
+                        return 0
+                return -1
 
             # ── Named pipes (inter-task IPC) ──────────────────────────────────
 
@@ -605,17 +624,82 @@ class BradOSKernel:
                 task_args  = args[2:]
                 return self.create_task(child_name, gfunc, *task_args, uid=proc.uid)
 
-            case SC.SIGNAL:
-                target_pid, sig_val = int(args[0]), args[1]
-                for p in self.tasks:
-                    if p.pid == target_pid:
-                        p.signals.append(sig_val)
-                        return 0
-                return -1
-
         return -1
 
     # ── Scheduler ─────────────────────────────────────────────────────────────
+
+    def _run_turns(self, proc: Process, turns: int) -> bool:
+        """Execute up to *turns* syscalls for *proc*.
+
+        Returns True if the process should be re-queued (still alive).
+        """
+        for _ in range(turns):
+            if proc.state != ProcState.RUNNING:
+                break
+            tick_start = time.monotonic()
+            try:
+                syscall = proc.gen.send(proc.last_ret)
+
+                if isinstance(syscall, tuple):
+                    cmd, args = syscall[0], syscall[1:]
+                else:
+                    cmd, args = syscall, ()
+
+                ret = self.handle_syscall(proc, cmd, args)
+
+                if ret is None:
+                    logger.info(f"Task '{proc.name}' (pid={proc.pid}) exited")
+                    return False
+
+                proc.last_ret = ret
+                proc.cpu_time += time.monotonic() - tick_start
+
+            except StopIteration:
+                logger.info(f"Task '{proc.name}' (pid={proc.pid}) completed")
+                return False
+            except Exception as e:
+                logger.error(f"Task '{proc.name}' crashed: {e}", exc_info=True)
+                return False
+
+        return proc.state not in (ProcState.ZOMBIE,)
+
+    def tick(self, turns_per_task: int | None = 1) -> int:
+        """One non-blocking scheduler epoch — safe to call from a TUI timer.
+
+        Unlike :meth:`run`, this never sleeps waiting for tasks to wake.
+        Sleeping tasks are re-queued until *wake_at*. Each runnable task
+        gets ``turns_per_task`` consecutive turns (default 1); pass
+        ``None`` to use the process's priority-weighted turn count.
+
+        Returns the number of tasks that executed at least one turn.
+        """
+        if not self.tasks or self._shutdown.is_set():
+            return 0
+
+        executed = 0
+        n = len(self.tasks)
+        for _ in range(n):
+            if not self.tasks or self._shutdown.is_set():
+                break
+            proc = self.tasks.popleft()
+
+            if proc.state == ProcState.SLEEPING:
+                if time.monotonic() < proc.wake_at:
+                    self.tasks.append(proc)
+                    continue
+                proc.state = ProcState.RUNNING
+                proc.last_ret = 0  # sleep returns 0
+
+            if proc.state != ProcState.RUNNING:
+                continue
+
+            turns = proc.priority_turns if turns_per_task is None else max(1, turns_per_task)
+            alive = self._run_turns(proc, turns)
+            if alive:
+                self.tasks.append(proc)
+            executed += 1
+
+        return executed
 
     def run(self):
         """
@@ -629,6 +713,8 @@ class BradOSKernel:
 
         SLEEP is non-blocking: sleeping tasks are skipped until wake_at.
         EXIT: task is removed; its generator is not re-queued.
+
+        For embedding in a Textual/async UI, prefer :meth:`tick` instead.
         """
         logger.info("Scheduler started")
 
@@ -647,41 +733,8 @@ class BradOSKernel:
             if proc.state != ProcState.RUNNING:
                 continue
 
-            turns = proc.priority_turns
-            for _ in range(turns):
-                if proc.state != ProcState.RUNNING:
-                    break
-                tick_start = time.monotonic()
-                try:
-                    syscall = proc.gen.send(proc.last_ret)
-
-                    if isinstance(syscall, tuple):
-                        cmd, args = syscall[0], syscall[1:]
-                    else:
-                        cmd, args = syscall, ()
-
-                    ret = self.handle_syscall(proc, cmd, args)
-
-                    if ret is None:
-                        logger.info(f"Task '{proc.name}' (pid={proc.pid}) exited")
-                        goto_next = True
-                        break
-
-                    proc.last_ret  = ret
-                    proc.cpu_time += time.monotonic() - tick_start
-
-                except StopIteration:
-                    logger.info(f"Task '{proc.name}' (pid={proc.pid}) completed")
-                    goto_next = True
-                    break
-                except Exception as e:
-                    logger.error(f"Task '{proc.name}' crashed: {e}", exc_info=True)
-                    goto_next = True
-                    break
-                else:
-                    goto_next = False
-
-            if not goto_next and proc.state not in (ProcState.ZOMBIE,):
+            alive = self._run_turns(proc, proc.priority_turns)
+            if alive:
                 self.tasks.append(proc)
 
             time.sleep(0.001)
@@ -690,12 +743,32 @@ class BradOSKernel:
 
     def shutdown(self):
         self._shutdown.set()
-        # Clean up real subprocesses
-        with self._lock:
-            for p in self._real_procs.values():
-                try: p.terminate()
-                except Exception: pass
+        if self.proc_mgr:
+            self.proc_mgr.shutdown()
+        elif hasattr(self, '_real_procs'):
+            with self._lock:
+                for p in self._real_procs.values():
+                    try: p.terminate()
+                    except Exception: pass
         logger.info("Kernel shutdown")
 
     def log(self, message: str):
         logger.info(message)
+
+
+# ── Desktop-friendly kernel tasks (no PRINT/INPUT — safe under Textual) ───────
+
+def desktop_clock_task():
+    """Publish wall-clock time to shared memory every second."""
+    while True:
+        yield (SC.SHMEM_PUT, "sys.clock", time.strftime("%Y-%m-%d %H:%M:%S"))
+        yield (SC.SLEEP, 1.0)
+
+
+def desktop_status_task():
+    """Heartbeat task: pid + monotonic uptime marker in shared memory."""
+    while True:
+        pid = yield (SC.GETPID,)
+        now = yield (SC.GET_TIME,)
+        yield (SC.SHMEM_PUT, "sys.status", {"pid": pid, "time": now})
+        yield (SC.SLEEP, 2.0)
