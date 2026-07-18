@@ -368,6 +368,33 @@ class TestBradSec:
         assert self.sec.check_cap(6, self.Cap.FS_READ)
         assert not self.sec.check_cap(6, self.Cap.FS_WRITE)
 
+    def test_capability_demo_guest_write_denied(self):
+        """Guest lacks FS_WRITE; session can write — the public show-ready demo."""
+        from brados_security import (
+            run_capability_demo, DEMO_GUEST_PID, DEMO_SESSION_PID, Cap,
+        )
+        from brados_vfs import create_default_vfs
+
+        vfs = create_default_vfs()
+        vfs.set_sec(self.sec)
+        results = run_capability_demo(vfs, self.sec)
+        by_step = {r["step"]: r for r in results}
+        assert by_step["guest_write"]["ok"] is True
+        assert "denied" in by_step["guest_write"]["detail"].lower() or \
+               "capability" in by_step["guest_write"]["detail"].lower()
+        assert by_step["guest_read"]["ok"] is True
+        assert by_step["session_write"]["ok"] is True
+        assert by_step["check_cap_guest"]["ok"] is True
+        assert all(r["ok"] for r in results)
+
+        # Direct API still enforces after the demo
+        with pytest.raises(PermissionError):
+            vfs.write_text("/tmp/again.txt", "nope", caller_pid=DEMO_GUEST_PID)
+        vfs.write_text("/tmp/again.txt", "yep", caller_pid=DEMO_SESSION_PID)
+        assert vfs.read_text("/tmp/again.txt", caller_pid=DEMO_GUEST_PID) == "yep"
+        assert not self.sec.check_cap(DEMO_GUEST_PID, Cap.FS_WRITE)
+        assert self.sec.check_cap(DEMO_SESSION_PID, Cap.FS_WRITE)
+
     def test_audit_log_writes(self):
         self.sec.audit.write("INFO", "TEST", "test event", {"k": "v"})
         events = self.sec.audit.tail(10)
