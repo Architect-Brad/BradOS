@@ -1,9 +1,11 @@
-# brados.py — BradOS v3.0 Entry Point
+# brados.py — BradOS v3.1 Entry Point
 #
-# Three modes. One codebase. Zero native dependencies.
+# Modes. One codebase. Zero native dependencies.
 #   (none)       Classic terminal mode
 #   --shell      Ocean Dark desktop shell  <- recommended
-#   --gui        Legacy Textual UI
+#   --demo       60-second headless proof (kernel + Cap Demo)
+#   --daemon     BradSec background daemon
+#   --gui        Legacy Textual UI (unmaintained)
 #
 # This is the entry point for the most complete Python OS-layer ever built.
 
@@ -39,6 +41,21 @@ if "--shell" in sys.argv:
         print(f"Shell import error: {e}")
         print("Install: pip install textual")
         sys.exit(1)
+
+if "--demo" in sys.argv:
+    # Headless 60s proof: kernel tasks + BradSec Cap Demo (no Textual required)
+    from pathlib import Path
+    import importlib.util
+    demo = Path(__file__).resolve().parent / "scripts" / "demo_60s.py"
+    if not demo.is_file():
+        print(f"Demo script missing: {demo}")
+        sys.exit(1)
+    spec = importlib.util.spec_from_file_location("brados_demo_60s", demo)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    rc = mod.main([a for a in sys.argv[1:] if a != "--demo"])
+    sys.exit(rc)
 
 if "--gui" in sys.argv:
     try:

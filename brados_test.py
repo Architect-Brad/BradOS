@@ -1128,8 +1128,30 @@ class TestBradMusic:
 
 
 # ════════════════════════════════════════════════════════════════
-# DESKTOP MINIMIZE/TASKBAR (regression: MinimizeApp bubbling)
+# 60-SECOND DEMO (headless)
 # ════════════════════════════════════════════════════════════════
+
+class TestDemo60s:
+    def test_demo_script_exists(self):
+        from pathlib import Path
+        p = Path(__file__).resolve().parent / "scripts" / "demo_60s.py"
+        assert p.is_file()
+
+    def test_demo_passes_fast(self, tmp_path, monkeypatch):
+        """Full headless demo must exit 0 (kernel tasks + Cap Demo)."""
+        import importlib.util
+        from pathlib import Path
+
+        monkeypatch.chdir(tmp_path)
+        demo = Path(__file__).resolve().parent / "scripts" / "demo_60s.py"
+        spec = importlib.util.spec_from_file_location("brados_demo_60s", demo)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        # Demo chdirs to repo root itself; still must pass
+        rc = mod.main(["--fast"])
+        assert rc == 0
+
 
 class TestLoginMobile:
     """Regression: mobile login crashed with AttributeError on _on_app_launch."""

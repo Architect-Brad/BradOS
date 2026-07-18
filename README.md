@@ -27,23 +27,28 @@ Many “Python OS” toys are menu loops and fake progress bars. BradOS aims hig
 
 ## 60-second demo (the “wow” path)
 
-1. **Launch**
-   ```bash
-   git clone https://github.com/Architect-Brad/BradOS.git
-   cd BradOS
-   pip install textual
-   python brados.py --shell
-   ```
-2. Pass splash / login (guest is fine).
-3. Press **`Ctrl+K`** → **Kernel** task table.  
-   You should see **DesktopClock** and **SysStatus** with live state / CPU time. Shared memory shows `sys.clock` after a second.
-4. Press **`Shift+S`** → **BradSec** → **⚡ Cap Demo** (or the Cap Demo button).  
-   Expect **PASS** on:
-   - Guest VFS write **DENIED** (no `FS_WRITE`)
-   - Guest VFS read **allowed**
-   - Session VFS write **allowed**
-   - `check_cap(guest, FS_WRITE) = False`
-5. Optional: **Files** app, open `/proc/version` via VFS-backed paths; **Monitor** if `psutil` is installed.
+### One command (headless proof — no Textual required)
+
+```bash
+git clone https://github.com/Architect-Brad/BradOS.git
+cd BradOS
+python brados.py --demo
+# same as: python scripts/demo_60s.py
+```
+
+This boots VFS + BradSec + kernel desktop tasks, runs the **Cap Demo**, and prints **PASS/FAIL**. Use it in CI, Termux, or a terminal recording.
+
+### Interactive desktop (~60s of keys)
+
+```bash
+pip install textual
+python brados.py --shell
+```
+
+1. Login (guest is fine).
+2. **`Ctrl+K`** → Kernel task table — **DesktopClock** / **SysStatus**, live `sys.clock`.
+3. **`Shift+S`** → BradSec → **⚡ Cap Demo** — guest write **DENIED**, session write allowed.
+4. Optional: Files → `/proc/version`; Monitor if `psutil` is installed.
 
 That’s the product story: *live kernel tasks + real capability deny*, not a wallpaper OS.
 
@@ -64,6 +69,7 @@ pip install psutil requests cryptography pyyaml
 # BradMusic tags (playback still needs mpv or ffmpeg on the host)
 pip install 'brados[music]'   # or: pip install mutagen
 
+python brados.py --demo      # 60-second headless proof (kernel + Cap Demo)
 python brados.py --shell     # Ocean Dark desktop (recommended)
 python brados.py             # Classic menu / mode selector
 python brados.py --daemon    # BradSec background daemon only
@@ -82,6 +88,7 @@ pytest brados_test.py -v
 
 | Command | Purpose |
 |---------|---------|
+| `python brados.py --demo` | 60s headless demo (kernel + Cap Demo) |
 | `python brados.py --shell` | Full desktop (default experience) |
 | `python brados.py` | Classic interactive menus |
 | `python brados.py --daemon` | BradSec daemon |

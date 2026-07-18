@@ -13,6 +13,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install textual pytest pytest-asyncio
 # Optional: psutil requests cryptography pyyaml mutagen
 
+python brados.py --demo     # 60s headless proof (kernel + Cap Demo)
 python brados.py --shell    # desktop
 pytest brados_test.py -q    # tests (must stay green)
 ```
