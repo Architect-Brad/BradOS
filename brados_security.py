@@ -218,7 +218,9 @@ class AuditLog:
     """
 
     def __init__(self, path: str = "brados_audit.log"):
-        self._path  = path
+        # Absolute path so background threads still write to the original
+        # session log after pytest (or the app) changes cwd.
+        self._path  = os.path.abspath(path)
         self._lock  = threading.Lock()
 
     def write(self, level: str, subsystem: str, event: str,
@@ -282,11 +284,13 @@ class IntegrityDaemon:
     WATCHED_DIRS  = ["."]
     IGNORE        = {"__pycache__", ".git", "backup_", "brados_integrity.json", "brados_audit.log"}
 
-    def __init__(self, audit: AuditLog):
+    def __init__(self, audit: AuditLog, manifest_path: str | None = None):
         self._audit    = audit
         self._manifest : dict[str, str] = {}
         self._lock     = threading.Lock()
         self._ignore_files = {"brados_audit.log", "brados_integrity.json"}
+        # Pin absolute path at construction (cwd can change; bg threads race).
+        self.manifest_path = os.path.abspath(manifest_path or self.MANIFEST_PATH)
 
     def _hash_file(self, path: str) -> str:
         """SHA-256 of file contents in 64 KB chunks."""
@@ -319,15 +323,20 @@ class IntegrityDaemon:
             manifest[fpath] = self._hash_file(fpath)
         with self._lock:
             self._manifest = manifest
-            manifest_dir = os.path.dirname(os.path.abspath(self.MANIFEST_PATH))
-            os.makedirs(manifest_dir, exist_ok=True)
-            tmp = self.MANIFEST_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({"built_at": datetime.now().isoformat(),
-                           "files": manifest}, f, indent=2)
+            manifest_dir = os.path.dirname(self.manifest_path)
             try:
-                os.replace(tmp, self.MANIFEST_PATH)
-            except FileNotFoundError:
+                os.makedirs(manifest_dir, exist_ok=True)
+            except OSError:
+                self._audit.write("WARN", "INTEGRITY",
+                                  "Baseline build skipped (tmp path gone)")
+                return manifest
+            tmp = self.manifest_path + ".tmp"
+            try:
+                with open(tmp, "w") as f:
+                    json.dump({"built_at": datetime.now().isoformat(),
+                               "files": manifest}, f, indent=2)
+                os.replace(tmp, self.manifest_path)
+            except (FileNotFoundError, OSError):
                 self._audit.write("WARN", "INTEGRITY",
                                   "Baseline build skipped (tmp path gone)")
                 return manifest
@@ -337,15 +346,15 @@ class IntegrityDaemon:
 
     def load_baseline(self) -> bool:
         """Load an existing manifest. Returns True if loaded, False if missing."""
-        if not os.path.exists(self.MANIFEST_PATH):
+        if not os.path.exists(self.manifest_path):
             return False
         try:
-            with open(self.MANIFEST_PATH) as f:
+            with open(self.manifest_path) as f:
                 data = json.load(f)
             with self._lock:
                 self._manifest = data.get("files", {})
             return True
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, OSError):
             return False
 
     def verify(self) -> list[dict]:
@@ -734,7 +743,7 @@ class BradSec:
         with self._lock:
             active_tokens = len(self._tokens)
         vault_locked = self.vault._key is None
-        baseline_exists = os.path.exists(IntegrityDaemon.MANIFEST_PATH)
+        baseline_exists = os.path.exists(self.integrity.manifest_path)
         audit_lines = 0
         try:
             with open(self.audit._path) as f:

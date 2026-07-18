@@ -399,7 +399,10 @@ class TestBradSec:
         self.sec.audit.write("INFO", "TEST", "test event", {"k": "v"})
         events = self.sec.audit.tail(10)
         assert len(events) >= 1
-        assert events[-1]["event"] == "test event"
+        # Match by content (not strictly last): bg integrity threads from a
+        # prior BradSec.start() used to race via relative audit paths after cwd
+        # changed. Paths are now absolute; this assertion stays race-tolerant.
+        assert any(e.get("event") == "test event" for e in events)
 
     def test_audit_log_search(self):
         self.sec.audit.write("WARNING", "AUTH", "bad login")
