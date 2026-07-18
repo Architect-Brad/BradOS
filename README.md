@@ -75,7 +75,8 @@ pytest brados_test.py -v
 
 **Termux (Android):** see [TERMUX.md](TERMUX.md) and `bash scripts/termux-setup.sh`.
 
-**Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) (dev setup, tests, how to add an app).
+**Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) (dev setup, tests, how to add an app).  
+**Security reports:** see [SECURITY.md](SECURITY.md) (private reporting, scope, threat model).
 
 ### Modes
 
