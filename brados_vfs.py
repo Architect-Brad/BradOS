@@ -319,10 +319,51 @@ class MemFSDriver(VFSDriver):
             dst_parent.children[dst_name] = node
 
 
+# ── Pipe-backed file handler (bridges VFS to subprocess pipes / IO objects) ──
+
+class PipeFile:
+    """A file-like wrapper around a raw fd or IO object for VFS pipe mounting.
+
+    Reads from `r_fd` are non-blocking via os.read.
+    Writes to `w_obj` go directly to the pipe.
+    """
+    def __init__(self, r_fd: int | None = None, w_obj=None):
+        self.r_fd = r_fd
+        self.w_obj = w_obj
+
+    def read(self, length: int = 4096) -> bytes:
+        if self.r_fd is None:
+            return b""
+        import fcntl
+        n = length if length > 0 else 4096
+        old = fcntl.fcntl(self.r_fd, fcntl.F_GETFL)
+        fcntl.fcntl(self.r_fd, fcntl.F_SETFL, old | os.O_NONBLOCK)
+        try:
+            return os.read(self.r_fd, n)
+        except (BlockingIOError, OSError):
+            return b""
+        finally:
+            fcntl.fcntl(self.r_fd, fcntl.F_SETFL, old)
+
+    def write(self, data: bytes) -> int:
+        if self.w_obj is None:
+            raise PermissionError("pipe not writable")
+        return self.w_obj.write(data)
+
+
 # ── ProcFSDriver ──────────────────────────────────────────────────────────────
 
 class ProcFSDriver(VFSDriver):
-    """/proc virtual filesystem.  Files are generated on read.
+    """/proc virtual filesystem.  Supports flat stat files + per-PID directories.
+
+    Flat files (cpuinfo, meminfo, version, …) are generated on read.
+    PID subdirectories expose process I/O as pipe files:
+      /proc/<pid>/stdin   — write to send input
+      /proc/<pid>/stdout  — read process output
+      /proc/<pid>/stderr  — read process errors
+      /proc/<pid>/status  — process state summary
+      /proc/<pid>/cmdline — command that started the process
+
     Kernel reference is optional — works standalone too."""
 
     name = "procfs"
@@ -338,6 +379,38 @@ class ProcFSDriver(VFSDriver):
             "loadavg":  self._loadavg,
             "net":      self._net,
         }
+        self._pids: dict[str, dict[str, PipeFile | str]] = {}  # pid -> {name: pipe_or_str}
+
+    # ── Process registration API ───────────────────────────────────────────
+
+    def register_pid(self, pid: str, name: str = "",
+                     stdin_pipe: PipeFile | None = None,
+                     stdout_pipe: PipeFile | None = None,
+                     stderr_pipe: PipeFile | None = None) -> None:
+        """Register a managed process under /proc/<pid>/."""
+        self._pids[pid] = {
+            "status":  f"Name:\t{name}\nPid:\t{pid}\nState:\trunning\n",
+            "cmdline": name,
+        }
+        if stdin_pipe:
+            self._pids[pid]["stdin"] = stdin_pipe
+        if stdout_pipe:
+            self._pids[pid]["stdout"] = stdout_pipe
+        if stderr_pipe:
+            self._pids[pid]["stderr"] = stderr_pipe
+
+    def update_status(self, pid: str, **fields) -> None:
+        entry = self._pids.get(pid)
+        if entry:
+            status = entry.get("status", "")
+            for k, v in fields.items():
+                entry["status"] = f"{k}:\t{v}\n"
+
+    def unregister_pid(self, pid: str) -> None:
+        self._pids.pop(pid, None)
+
+    def registered_pids(self) -> list[str]:
+        return list(self._pids.keys())
 
     # ── Content generators ─────────────────────────────────────────────────
 
@@ -384,16 +457,21 @@ class ProcFSDriver(VFSDriver):
             return "uptime: unavailable\n"
 
     def _processes(self) -> str:
+        lines = [f"{'PID':>6}  {'STATE':>8}  {'TYPE':>8}  NAME"]
         if self._kernel:
-            tasks = self._kernel.list_tasks()
-            lines = [f"{'PID':>6}  {'STATE':>8}  {'CPU':>8}  NAME"]
-            for t in tasks:
+            for t in self._kernel.list_tasks():
                 lines.append(
-                    f"{t['pid']:>6}  {t['state']:>8}  "
-                    f"{t['cpu_s']:>6.2f}s  {t['name']}"
+                    f"{t['pid']:>6}  {t['state']:>8}  {'GEN':>8}  {t['name']}"
                 )
-            return "\n".join(lines) + "\n"
-        return "No kernel attached\n"
+        for pid in sorted(self._pids.keys()):
+            status = self._pids[pid].get("status", "")
+            state = "running"
+            for line in status.split("\n"):
+                if line.startswith("State:"):
+                    state = line.split("\t")[-1].strip()
+            name = self._pids[pid].get("cmdline", "?")
+            lines.append(f"{pid:>6}  {state:>8}  {'PROC':>8}  {name}")
+        return "\n".join(lines) + "\n"
 
     def _loadavg(self) -> str:
         try:
@@ -412,38 +490,77 @@ class ProcFSDriver(VFSDriver):
                 f"pkts_sent  : {ni.packets_sent:>15,}\n"
                 f"pkts_recv  : {ni.packets_recv:>15,}\n"
             )
-        except ImportError:
-            return "net: psutil not installed\n"
+        except (ImportError, PermissionError, OSError):
+            return "net: unavailable (no /proc permission)\n"
+
+    # ── Path helpers ───────────────────────────────────────────────────────
+
+    def _split(self, path: str) -> tuple[str | None, str | None]:
+        """Return (top, rest) where top is the first path component."""
+        parts = [p for p in path.strip("/").split("/", 1) if p]
+        if not parts:
+            return (None, None)
+        return (parts[0], parts[1] if len(parts) > 1 else None)
 
     # ── VFSDriver impl ─────────────────────────────────────────────────────
 
     def stat(self, path: str) -> VFSStat:
-        name = path.strip("/")
-        if name == "" or name in self._files:
-            ntype = NT.DIR if name == "" else NT.FILE
-            data  = self._files[name]().encode() if name else b""
+        top, rest = self._split(path)
+        if top is None or top in self._files:
+            ntype = NT.DIR if top is None else NT.FILE
+            data  = self._files[top]().encode() if top else b""
             return VFSStat(
-                path=path, name=name or "proc",
+                path=path, name=top or "proc",
                 type=ntype, size=len(data), mode=0o444,
                 uid=0, gid=0,
             )
+        if top in self._pids:
+            entry = self._pids[top]
+            if rest is None:
+                return VFSStat(path=path, name=top, type=NT.DIR, mode=0o555, uid=0)
+            if rest in entry:
+                val = entry[rest]
+                size = len(val) if isinstance(val, str) else 0
+                mode = 0o444 if rest in ("status", "cmdline") else 0o644
+                return VFSStat(path=path, name=rest, type=NT.FILE, size=size, mode=mode, uid=0)
+            raise FileNotFoundError(f"/proc/{top}/{rest}")
         raise FileNotFoundError(f"/proc{path}: no such file")
 
     def readdir(self, path: str) -> list[str]:
-        if path.strip("/") == "":
-            return sorted(self._files.keys())
+        top, rest = self._split(path)
+        if top is None:
+            return sorted(self._files.keys()) + sorted(self._pids.keys())
+        if top in self._pids and rest is None:
+            return sorted(self._pids[top].keys())
         raise NotADirectoryError(path)
 
     def read(self, path: str, length: int = -1, offset: int = 0) -> bytes:
-        name = path.strip("/")
-        if name in self._files:
-            data = self._files[name]().encode()
+        top, rest = self._split(path)
+        if top in self._files and rest is None:
+            data = self._files[top]().encode()
             data = data[offset:]
             return data if length < 0 else data[:length]
-        raise FileNotFoundError(f"/proc/{name}")
+        if top in self._pids and rest:
+            entry = self._pids[top].get(rest)
+            if entry is None:
+                raise FileNotFoundError(f"/proc/{top}/{rest}")
+            if isinstance(entry, str):
+                data = entry.encode()
+                data = data[offset:]
+                return data if length < 0 else data[:length]
+            if isinstance(entry, PipeFile):
+                return entry.read(length)
+        raise FileNotFoundError(f"/proc/{top}/{rest}" if rest else f"/proc/{top}")
 
     def write(self, path: str, data: bytes, offset: int = 0) -> int:
-        raise PermissionError("/proc is read-only")
+        top, rest = self._split(path)
+        if top in self._pids and rest:
+            entry = self._pids[top].get(rest)
+            if isinstance(entry, PipeFile):
+                return entry.write(data)
+            if isinstance(entry, str) and rest in ("status", "cmdline"):
+                raise PermissionError(f"/proc/{top}/{rest} is read-only")
+        raise PermissionError(f"/proc/{top} is read-only") if top and top in self._pids else PermissionError("/proc is read-only")
 
     def mkdir(self, path: str, mode: int = 0) -> None:
         raise PermissionError("/proc is read-only")
@@ -520,6 +637,10 @@ class VirtualFileSystem:
     Maintains a mount table mapping path prefixes to VFSDrivers.
     Dispatches all operations to the most-specific mounted driver.
 
+    If a BradSec instance is attached via `set_sec()`, each public
+    operation can optionally accept a `caller_pid` to enforce
+    capability-based access (FS_READ / FS_WRITE / FS_EXEC).
+
     Default mount layout:
         /           MemFSDriver     (root in-memory layer)
         /home       LocalFSDriver   (user homes, sandboxed)
@@ -531,6 +652,30 @@ class VirtualFileSystem:
     def __init__(self):
         self._mounts:  dict[str, VFSDriver] = {}
         self._lock     = threading.RLock()
+        self._sec     = None      # BradSec instance (optional)
+        self._default_pid: int | None = None  # session pid for desktop apps
+
+    def set_sec(self, sec) -> None:
+        """Attach a BradSec instance for capability enforcement."""
+        self._sec = sec
+
+    def set_default_pid(self, pid: int | None) -> None:
+        """Set a default caller_pid for operations that don't provide one.
+        Used by the desktop shell so all app VFS operations are checked."""
+        self._default_pid = pid
+
+    def _resolve_pid(self, pid: int | None) -> int | None:
+        return pid if pid is not None else self._default_pid
+
+    def _require_cap(self, pid: int | None, cap) -> None:
+        """Check that `pid` holds `cap`.  No-op if no BradSec attached."""
+        pid = self._resolve_pid(pid)
+        if self._sec is None or pid is None:
+            return
+        if not self._sec.check_cap(pid, cap):
+            from brados_security import Cap
+            name = Cap(cap).name if isinstance(cap, int) else cap.name
+            raise PermissionError(f"capability denied: pid={pid} lacks {name}")
 
     # ── Mount management ───────────────────────────────────────────────────
 
@@ -547,6 +692,13 @@ class VirtualFileSystem:
     def mounts(self) -> list[dict]:
         with self._lock:
             return [{"path": p, "driver": d.name} for p, d in self._mounts.items()]
+
+    def get_driver(self, name: str) -> Any | None:
+        with self._lock:
+            for d in self._mounts.values():
+                if d.name == name:
+                    return d
+        return None
 
     # ── Path resolution ────────────────────────────────────────────────────
 
@@ -573,89 +725,96 @@ class VirtualFileSystem:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def stat(self, path: str) -> VFSStat:
+    def stat(self, path: str, caller_pid: int | None = None) -> VFSStat:
+        self._require_cap(caller_pid, 4)  # FS_READ
         driver, rel = self._route(path)
         return driver.stat(rel)
 
-    def exists(self, path: str) -> bool:
+    def exists(self, path: str, caller_pid: int | None = None) -> bool:
+        self._require_cap(caller_pid, 4)  # FS_READ
         try:
             self.stat(path)
             return True
         except (FileNotFoundError, NotADirectoryError):
             return False
 
-    def listdir(self, path: str) -> list[str]:
+    def listdir(self, path: str, caller_pid: int | None = None) -> list[str]:
+        self._require_cap(caller_pid, 4)  # FS_READ
         driver, rel = self._route(path)
         return driver.readdir(rel)
 
-    def read(self, path: str, length: int = -1, offset: int = 0) -> bytes:
+    def read(self, path: str, length: int = -1, offset: int = 0, caller_pid: int | None = None) -> bytes:
+        self._require_cap(caller_pid, 4)  # FS_READ
         driver, rel = self._route(path)
         return driver.read(rel, length, offset)
 
-    def read_text(self, path: str, encoding: str = "utf-8") -> str:
-        return self.read(path).decode(encoding, errors="replace")
+    def read_text(self, path: str, encoding: str = "utf-8", caller_pid: int | None = None) -> str:
+        return self.read(path, caller_pid=caller_pid).decode(encoding, errors="replace")
 
-    def write(self, path: str, data: bytes) -> int:
+    def write(self, path: str, data: bytes, caller_pid: int | None = None) -> int:
+        self._require_cap(caller_pid, 8)  # FS_WRITE
         driver, rel = self._route(path)
         return driver.write(rel, data)
 
-    def write_text(self, path: str, text: str, encoding: str = "utf-8") -> int:
-        return self.write(path, text.encode(encoding))
+    def write_text(self, path: str, text: str, encoding: str = "utf-8", caller_pid: int | None = None) -> int:
+        return self.write(path, text.encode(encoding), caller_pid=caller_pid)
 
-    def mkdir(self, path: str, mode: int = DEFAULT_DIR_MODE, exist_ok: bool = True) -> None:
+    def mkdir(self, path: str, mode: int = DEFAULT_DIR_MODE, exist_ok: bool = True, caller_pid: int | None = None) -> None:
+        self._require_cap(caller_pid, 8)  # FS_WRITE
         if exist_ok and self.exists(path):
             return
         driver, rel = self._route(path)
         driver.mkdir(rel, mode)
 
-    def unlink(self, path: str) -> None:
+    def unlink(self, path: str, caller_pid: int | None = None) -> None:
+        self._require_cap(caller_pid, 8)  # FS_WRITE
         driver, rel = self._route(path)
         driver.unlink(rel)
 
-    def rename(self, src: str, dst: str) -> None:
+    def rename(self, src: str, dst: str, caller_pid: int | None = None) -> None:
+        self._require_cap(caller_pid, 8)  # FS_WRITE
         d_src, r_src = self._route(src)
         d_dst, r_dst = self._route(dst)
         if type(d_src) is not type(d_dst):
-            # Cross-driver rename: read + write + delete
             data = d_src.read(r_src)
             d_dst.write(r_dst, data)
             d_src.unlink(r_src)
         else:
             d_src.rename(r_src, r_dst)
 
-    def makedirs(self, path: str, mode: int = DEFAULT_DIR_MODE) -> None:
+    def makedirs(self, path: str, mode: int = DEFAULT_DIR_MODE, caller_pid: int | None = None) -> None:
         """Recursively create directories, like os.makedirs."""
         parts = [p for p in path.split("/") if p]
         for i in range(1, len(parts) + 1):
-            self.mkdir("/" + "/".join(parts[:i]), mode, exist_ok=True)
+            self.mkdir("/" + "/".join(parts[:i]), mode, exist_ok=True, caller_pid=caller_pid)
 
     # ── Convenience: read/write JSON ───────────────────────────────────────
 
-    def read_json(self, path: str) -> dict | list:
-        return json.loads(self.read_text(path))
+    def read_json(self, path: str, caller_pid: int | None = None) -> dict | list:
+        return json.loads(self.read_text(path, caller_pid=caller_pid))
 
-    def write_json(self, path: str, data: dict | list, indent: int = 2) -> None:
-        self.write_text(path, json.dumps(data, indent=indent))
+    def write_json(self, path: str, data: dict | list, indent: int = 2, caller_pid: int | None = None) -> None:
+        self.write_text(path, json.dumps(data, indent=indent), caller_pid=caller_pid)
 
     # ── Convenience: tree walk ─────────────────────────────────────────────
 
-    def walk(self, top: str) -> Iterator[tuple[str, list[str], list[str]]]:
+    def walk(self, top: str, caller_pid: int | None = None) -> Iterator[tuple[str, list[str], list[str]]]:
         """Yield (dirpath, subdirs, files) like os.walk."""
         try:
-            entries = self.listdir(top)
+            entries = self.listdir(top, caller_pid=caller_pid)
         except (FileNotFoundError, NotADirectoryError, PermissionError):
             return
         dirs, files = [], []
         for e in entries:
             child = top.rstrip("/") + "/" + e
             try:
-                s = self.stat(child)
+                s = self.stat(child, caller_pid=caller_pid)
                 (dirs if s.is_dir else files).append(e)
             except Exception:
                 files.append(e)
         yield top, dirs, files
         for d in dirs:
-            yield from self.walk(top.rstrip("/") + "/" + d)
+            yield from self.walk(top.rstrip("/") + "/" + d, caller_pid=caller_pid)
 
 
 # ── Factory: create a default-layout BradOS VFS ───────────────────────────────
