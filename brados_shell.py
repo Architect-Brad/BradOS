@@ -1620,7 +1620,8 @@ class NotifBell(Static):
         self.set_interval(2, self._update)
 
     def _update(self) -> None:
-        n = len(getattr(self.app, "_notifications", []))
+        # Use BradOS history only — never Textual's App._notifications (set).
+        n = len(getattr(self.app, "_notify_history", []))
         if n != self._count:
             self._count = n
             bell = "🔔" if n > 0 else "🔕"
@@ -2221,7 +2222,7 @@ class NotifyHistory(ModalScreen[None]):
         with Vertical(id="notify-box"):
             yield Static("[bold #00d4ff]Notification History[/]", id="notify-title")
             with ScrollableContainer(id="notify-list"):
-                history = getattr(self.app, "_notifications", [])
+                history = getattr(self.app, "_notify_history", [])
                 if not history:
                     yield Static("No notifications yet", id="notify-empty")
                 else:
@@ -6848,7 +6849,8 @@ class BradOSShell(App):
         # Start BradSec daemon for IPC and background monitoring
         daemon = get_bradsec_daemon()
         daemon.start()
-        self._notifications: list[tuple[str, str, str]] = []
+        # Must not be named _notifications — Textual App owns that as a set.
+        self._notify_history: list[tuple[str, str, str]] = []
         self._last_input: float = time.time()
         self._locked: bool = False
         daemon.on_alert(lambda findings: self.call_from_thread(
@@ -6910,7 +6912,9 @@ class BradOSShell(App):
     def _notify_and_store(self, message: str, severity: str = "information") -> None:
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
-        self._notifications.append((ts, message, severity))
+        if not hasattr(self, "_notify_history") or self._notify_history is None:
+            self._notify_history = []
+        self._notify_history.append((ts, message, severity))
         self.notify(message, severity=severity)
 
     def _set_theme(self, theme_name: str) -> None:
