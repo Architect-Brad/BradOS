@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import os
 import re
 import subprocess
@@ -27,6 +26,9 @@ from datetime import datetime
 from functools import partial
 from typing import Any, ClassVar
 
+from brados_system import is_mobile_display, is_tablet_display
+from brados_music import MusicPlayerWindow
+
 from textual.app import App, ComposeResult
 from textual.screen import Screen, ModalScreen
 from textual.widgets import (
@@ -38,7 +40,7 @@ from textual.containers import Container, Grid, Horizontal, ScrollableContainer,
 from textual.reactive import reactive
 from textual.binding import Binding
 from textual import on, work
-from textual.events import Click, Key
+from textual.events import Click, Key, MouseDown, MouseUp
 from textual.css.query import NoMatches
 from textual.message import Message
 
@@ -57,6 +59,11 @@ from brados_security import BradSec, Cap, get_bradsec, get_bradsec_daemon, BRADS
 from brados_bpkg import BpkgManager, get_bpkg
 from brados_mail_server import get_mail_server
 from brados_mesh import get_mesh, MeshNode, Peer
+from brados_kernel_core import (
+    BradOSKernel,
+    desktop_clock_task,
+    desktop_status_task,
+)
 
 try:
     import jedi
@@ -224,6 +231,108 @@ AppIconWidget:hover {
 
 AppIconWidget.running {
     border: round #2ed573;
+}
+
+/* ── Mobile layout (overrides) ─────────── */
+
+.mobile #desktop-area {
+    padding: 1 1;
+}
+
+.mobile AppIconWidget {
+    height: 9;
+    padding: 0 1;
+    border: round #1e3a5f;
+}
+
+.mobile .icon-row {
+    height: 10;
+    margin: 0 0 2 0;
+}
+
+.mobile #desktop-hint {
+    display: none;
+}
+
+.mobile #top-clock {
+    display: none;
+}
+
+.mobile #top-user {
+    display: none;
+}
+
+.mobile #taskbar {
+    height: 5;
+}
+
+.mobile #tray-stats {
+    display: none;
+}
+
+/* ── Mobile Launcher ───────────────────── */
+
+MobileLauncher {
+    align: center top;
+    background: #0d1b2a;
+}
+
+#ml-container {
+    width: 100%;
+    height: 100%;
+}
+
+#ml-spacer-top { height: 1; }
+#ml-spacer-bottom { height: 1; }
+
+#ml-search {
+    width: 100%;
+    height: 3;
+    margin: 0 0 1 0;
+    border: round #00d4ff;
+    background: #1a2740;
+    color: #ecf0f1;
+}
+
+#ml-list {
+    width: 100%;
+    height: 1fr;
+}
+
+.ml-app-btn {
+    width: 100%;
+    height: 5;
+    margin: 0 0 1 0;
+    background: #1a2740;
+    border: round #1e3a5f;
+    color: #ecf0f1;
+    content-align: left middle;
+    padding: 0 2;
+}
+
+.ml-app-btn:hover {
+    background: #243450;
+    border: round #00d4ff;
+}
+
+.mobile #tray-sec {
+    display: none;
+}
+
+/* ── Tablet layout ─────────────────────── */
+
+.tablet #desktop-area {
+    padding: 1 2;
+}
+
+.tablet AppIconWidget {
+    height: 8;
+    padding: 0 1;
+}
+
+.tablet .icon-row {
+    height: 9;
+    margin: 0 0 1 0;
 }
 
 #desktop-hint {
@@ -1108,10 +1217,14 @@ _GitCommitModal {
 }
 """
 
-# Build SHELL_CSS by replacing hardcoded hex colors with CSS $var references
+# Build SHELL_CSS by replacing hardcoded hex colors with CSS $var references.
+# Uses a negative lookahead so 8-digit alpha-channel colors (e.g. #00d4ff22,
+# used for translucent button backgrounds) don't get their trailing alpha
+# digits glued onto the variable name (which previously produced invalid,
+# crash-causing references like "$accent22").
 SHELL_CSS = _RAW_CSS
 for _hex, _var in _CSS_COLORS.items():
-    SHELL_CSS = SHELL_CSS.replace(_hex, _var)
+    SHELL_CSS = re.sub(re.escape(_hex) + r"(?![0-9a-fA-F])", _var, SHELL_CSS)
 
 # ── App manifest ──────────────────────────────────────────────────────────────
 
@@ -1137,6 +1250,7 @@ APPS = [
     # Row 5 — creative & tools
     {"id": "paint",      "icon": "🎨",  "name": "Paint",     "desc": "Pixel editor",  "cat": "Creative"},
     {"id": "converter",  "icon": "⇄",  "name": "Converter",  "desc": "Unit converter","cat": "Utilities"},
+    {"id": "texttools",  "icon": "✎",  "name": "Text Tools", "desc": "Word counter", "cat": "Utilities"},
     {"id": "rss",        "icon": "◉",  "name": "RSS Reader", "desc": "Feed reader",   "cat": "Productivity"},
     # Row 6 — new apps
     {"id": "snake",      "icon": "🐍",  "name": "Snake Game", "desc": "Classic snake", "cat": "Games"},
@@ -1147,6 +1261,8 @@ APPS = [
     {"id": "game2048",   "icon": "🎲",  "name": "2048",       "desc": "Tile game",    "cat": "Games"},
     {"id": "markdown",   "icon": "📝",  "name": "Markdown",   "desc": "MD preview",   "cat": "Productivity"},
     {"id": "mesh",       "icon": "🕸",  "name": "Mesh",       "desc": "P2P network",  "cat": "Network"},
+    # Row 8 — media
+    {"id": "music",      "icon": "♫",  "name": "BradMusic",  "desc": "Music player",  "cat": "Media"},
 ]
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -1343,10 +1459,19 @@ class LoginScreen(Screen):
     def _enter(self) -> None:
         self._go()
 
+    def _home_screen(self):
+        """DesktopScreen for desktop, MobileLauncher for phones."""
+        if is_mobile_display():
+            return MobileLauncher()
+        return DesktopScreen()
+
+    def _go_home(self) -> None:
+        self.app.push_screen(self._home_screen())
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-guest":
             self.app.user_profile = load_user_profile("guest")
-            self.app.push_screen(DesktopScreen())
+            self._go_home()
         else:
             self._go()
 
@@ -1358,7 +1483,14 @@ class LoginScreen(Screen):
             return
         self.app.user_profile = load_user_profile(uname)
         self.query_one("#login-err", Static).update("")
-        self.app.push_screen(DesktopScreen())
+        self._go_home()
+
+    def _go_home(self) -> None:
+        home = self._home_screen()
+        if isinstance(home, MobileLauncher):
+            self.app.push_screen(home, self._on_app_launch)
+        else:
+            self.app.push_screen(home)
 
     async def _shake(self) -> None:
         box = self.query_one("#login-box")
@@ -1403,7 +1535,7 @@ class TrayStats(Static):
             cpu = psutil.cpu_percent(interval=0.5)
             ram = psutil.virtual_memory().percent
             return f"CPU {cpu:4.0f}%  RAM {ram:4.0f}%"
-        except ImportError:
+        except (ImportError, PermissionError, OSError):
             return "psutil ✗"
 
     def render(self) -> str: return self._s
@@ -1484,16 +1616,6 @@ class AppIconWidget(Static):
     def on_click(self) -> None:
         self.post_message(LaunchApp(self._app["id"]))
 
-    def render(self) -> str:
-        return (
-            f"[bold #00d4ff]{self._app['icon']}[/]\n"
-            f"[bold #ecf0f1]{self._app['name']}[/]\n"
-            f"[#7f8c8d]{self._app['desc']}[/]"
-        )
-
-    def on_click(self) -> None:
-        self.post_message(LaunchApp(self._app["id"]))
-
 
 class DesktopScreen(Screen):
     BINDINGS: ClassVar = [
@@ -1525,7 +1647,17 @@ class DesktopScreen(Screen):
     # and it silently overwrites any class-level set() with True at startup.
     # Always initialize mutable state in on_mount instead.
 
+    @property
+    def _cols(self) -> int:
+        """Number of app-icon columns per row: 2 mobile, 3 tablet, 4 desktop."""
+        if is_mobile_display():
+            return 2
+        if is_tablet_display():
+            return 3
+        return 4
+
     def compose(self) -> ComposeResult:
+        cols = self._cols
         with Horizontal(id="top-bar"):
             yield Static("⬡ BradOS", id="top-brand")
             yield Static("", id="top-spacer")
@@ -1535,17 +1667,18 @@ class DesktopScreen(Screen):
 
         with ScrollableContainer(id="desktop-area"):
             with Vertical(id="icon-grid"):
-                # 4 icons per row — Horizontal rows are bulletproof vs CSS grid-size
-                rows = [APPS[i:i+4] for i in range(0, len(APPS), 4)]
+                rows = [APPS[i:i+cols] for i in range(0, len(APPS), cols)]
                 for row in rows:
                     with Horizontal(classes="icon-row"):
                         for app in row:
                             yield AppIconWidget(app)
-            yield Static(
-                "[#1e3a5f]t=Terminal  b=Browser  f=Files  e=Editor  m=Mail  "
-                "n=Notes  c=Calc  k=Clock  p=Monitor  g=Logs  s=Settings[/]",
-                id="desktop-hint",
-            )
+            hint_visible = not is_mobile_display()
+            if hint_visible:
+                yield Static(
+                    "[#1e3a5f]t=Terminal  b=Browser  f=Files  e=Editor  m=Mail  "
+                    "n=Notes  c=Calc  k=Clock  p=Monitor  g=Logs  s=Settings[/]",
+                    id="desktop-hint",
+                )
 
         with Horizontal(id="taskbar"):
             with Horizontal(id="taskbar-apps"):
@@ -1566,12 +1699,20 @@ class DesktopScreen(Screen):
         self.query_one("#top-user", Static).update(
             f"[bold #2ed573]● {self.app.user_profile.get('username', '?')}[/]"
         )
+        # Apply mobile/tablet CSS class
+        if is_mobile_display():
+            self.add_class("mobile")
+        elif is_tablet_display():
+            self.add_class("tablet")
         # Staggered icon entrance animation
         for i, widget in enumerate(self.query(AppIconWidget)):
             widget.styles.opacity = 0.0
             widget.styles.animate("opacity", 1.0, duration=0.4, delay=i * 0.05)
         self.set_interval(3, self._pulse_icons)
         self.set_interval(30, self._check_idle_lock)
+        # Touch/swipe gesture state
+        self._swipe_start: tuple[int, int] | None = None
+        self._swipe_time: float = 0.0
 
     def _update_ws_indicator(self) -> None:
         try:
@@ -1594,7 +1735,34 @@ class DesktopScreen(Screen):
         if idle > 600 and not self.app._locked:  # 10 min idle → lock
             self._lock_screen()
 
-    # ── Message / button / click handlers ────────────────────────────────────
+    # ── Touch / swipe gesture support ────────────────────────────────────────
+
+    def on_mouse_down(self, event: MouseDown) -> None:
+        if event.button == 0:  # left click / touch
+            self._swipe_start = (event.screen_x, event.screen_y)
+            self._swipe_time = time.time()
+
+    def on_mouse_up(self, event: MouseUp) -> None:
+        if self._swipe_start and event.button == 0:
+            dx = event.screen_x - self._swipe_start[0]
+            dy = event.screen_y - self._swipe_start[1]
+            elapsed = time.time() - self._swipe_time
+            self._swipe_start = None
+            # Long press (touch hold > 0.6s, minimal movement) → context menu
+            if elapsed > 0.6 and abs(dx) < 20 and abs(dy) < 20:
+                self._show_context_menu()
+                event.stop()
+                return
+            # Horizontal swipe → workspace switch
+            threshold = 60
+            if abs(dx) > threshold and abs(dx) > abs(dy) * 2:
+                if dx > 0:
+                    self.action_prev_workspace()
+                else:
+                    self.action_next_workspace()
+                event.stop()
+
+    # ── Right-click / context menu ───────────────────────────────────────────
 
     @on(Click, "#top-brand")
     def _on_brand_click(self) -> None:
@@ -1665,11 +1833,6 @@ class DesktopScreen(Screen):
     def on_launch_app(self, message: LaunchApp) -> None:
         self._open(message.app_id)
 
-    def on_minimize_app(self, message: MinimizeApp) -> None:
-        """Window posted this before dismissing itself — keep it in the taskbar."""
-        self._minimized.add(message.app_id)
-        self._refresh_taskbar()
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id and event.button.id.startswith("task-"):
             self._open(event.button.id[5:])
@@ -1697,6 +1860,7 @@ class DesktopScreen(Screen):
             "bpkg":       BpkgWindow,
             "paint":      PaintWindow,
             "converter":  ConverterWindow,
+            "texttools":  TextToolsWindow,
             "rss":        RssWindow,
             "snake":      SnakeWindow,
             "vault":      VaultWindow,
@@ -1705,6 +1869,7 @@ class DesktopScreen(Screen):
             "game2048":    Game2048Window,
             "markdown":    MarkdownWindow,
             "mesh":        MeshWindow,
+            "music":       MusicPlayerWindow,
         }
         cls = screen_map.get(app_id)
         if not cls:
@@ -1761,6 +1926,87 @@ class DesktopScreen(Screen):
             if aid in self._open_apps:
                 bg = "#243450" if self._icon_pulse else "#1a2740"
                 widget.styles.background = bg
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MOBILE LAUNCHER  (full-screen touch-friendly app launcher)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MobileLauncher(Screen):
+    """Simplified full-screen app launcher for phones/small terminals.
+
+    Replaces DesktopScreen when is_mobile_display() is True.
+    Big touch targets, search bar, swipe-up to dismiss.
+    """
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "quit", "Quit"),
+        Binding("slash", "focus_search", "Search"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="ml-spacer-top")
+        with Vertical(id="ml-container"):
+            yield Input(placeholder="🔍 Search apps…", id="ml-search")
+            with ScrollableContainer(id="ml-list"):
+                for app in APPS:
+                    yield Button(
+                        f"{app['icon']}  {app['name']}",
+                        id=f"ml-{app['id']}",
+                        classes="ml-app-btn",
+                    )
+        yield Static("", id="ml-spacer-bottom")
+
+    def on_mount(self) -> None:
+        self.query_one("#ml-search", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "ml-search":
+            return
+        q = event.value.lower()
+        for btn in self.query(".ml-app-btn"):
+            app_id = btn.id[3:]
+            meta = next((a for a in APPS if a["id"] == app_id), None)
+            if meta is None:
+                continue
+            match = (q in meta["name"].lower() or q in meta["desc"].lower()
+                     or q in meta["cat"].lower())
+            btn.display = match or not q
+
+    def _app_screen(self, app_id: str) -> type[Screen] | None:
+        """Resolve app_id to a screen class (lazy, using module globals)."""
+        g = sys.modules[__name__].__dict__
+        ids = {
+            "terminal":"TerminalWindow","browser":"BrowserWindow",
+            "files":"FileManagerWindow","editor":"EditorWindow",
+            "mail":"MailWindow","notes":"NotesWindow",
+            "calculator":"CalculatorWindow","clock":"ClockWindow",
+            "monitor":"MonitorWindow","logs":"LogsWindow",
+            "kernel":"KernelWindow","settings":"SettingsWindow",
+            "bradsec":"BradSecWindow","bpkg":"BpkgWindow",
+            "paint":"PaintWindow","converter":"ConverterWindow",
+            "texttools":"TextToolsWindow","rss":"RssWindow",
+            "snake":"SnakeWindow","vault":"VaultWindow",
+            "weather":"WeatherWindow","minesweeper":"MineWindow",
+            "game2048":"Game2048Window","markdown":"MarkdownWindow",
+            "mesh":"MeshWindow",
+            "music":"MusicPlayerWindow",
+        }
+        cls_name = ids.get(app_id)
+        return g.get(cls_name) if cls_name else None
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id and event.button.id.startswith("ml-"):
+            app_id = event.button.id[3:]
+            cls = self._app_screen(app_id)
+            if cls:
+                self.app.push_screen(cls())
+
+    def action_quit(self) -> None:
+        self.app.quit()
+
+    def action_focus_search(self) -> None:
+        self.query_one("#ml-search", Input).focus()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3184,6 +3430,9 @@ class MailWindow(BradWindow):
         t = self.query_one("#mail-table", DataTable)
         t.clear()
         msgs = self.app.user_profile.get("mail_folders", {}).get(folder, [])
+        if not msgs:
+            t.add_row("", "[#1e3a5f](no messages)[/]", "", "")
+            return
         key  = "from" if folder == "inbox" else "to"
         for m in msgs:
             star = "⭐" if m.get("starred") else " "
@@ -3640,31 +3889,36 @@ class MonitorWindow(BradWindow):
             cpu  = psutil.cpu_percent(interval=0.5)
             mem  = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
-            net  = psutil.net_io_counters()
+            try:
+                net  = psutil.net_io_counters()
+                net_card  = (f"[bold #00d4ff]Network[/]\n"
+                             f"[#2ed573]↑ {net.bytes_sent//1024:,} KB[/]\n"
+                             f"[#ffa502]↓ {net.bytes_recv//1024:,} KB[/]")
+            except (PermissionError, OSError):
+                net_card = "[bold #00d4ff]Network[/]\n[#ffa502]permission denied[/]"
 
             cpu_card  = f"[bold #00d4ff]CPU[/]\n{bar(cpu)}\n[#7f8c8d]{platform.processor()[:32]}[/]"
             ram_card  = (f"[bold #00d4ff]RAM[/]\n{bar(mem.percent)}\n"
                          f"[#7f8c8d]{mem.used//(1024**2):,} / {mem.total//(1024**2):,} MB[/]")
             disk_card = (f"[bold #00d4ff]Disk[/]\n{bar(disk.percent)}\n"
                          f"[#7f8c8d]{disk.used//(1024**3):,} / {disk.total//(1024**3):,} GB[/]")
-            net_card  = (f"[bold #00d4ff]Network[/]\n"
-                         f"[#2ed573]↑ {net.bytes_sent//1024:,} KB[/]\n"
-                         f"[#ffa502]↓ {net.bytes_recv//1024:,} KB[/]")
 
-            # Cap at 15 rows to keep the table snappy
             procs: list[tuple] = []
-            for p in sorted(
-                psutil.process_iter(["pid", "name", "cpu_percent",
-                                     "memory_info", "status"]),
-                key=lambda x: x.info["cpu_percent"] or 0,
-                reverse=True,
-            )[:15]:
-                pi     = p.info
-                mem_mb = (pi["memory_info"].rss // (1024**2)) if pi.get("memory_info") else 0
-                procs.append((
-                    str(pi["pid"]), pi["name"][:24],
-                    f"{pi['cpu_percent']:.1f}", str(mem_mb), pi["status"],
-                ))
+            try:
+                for p in sorted(
+                    psutil.process_iter(["pid", "name", "cpu_percent",
+                                         "memory_info", "status"]),
+                    key=lambda x: x.info["cpu_percent"] or 0,
+                    reverse=True,
+                )[:15]:
+                    pi     = p.info
+                    mem_mb = (pi["memory_info"].rss // (1024**2)) if pi.get("memory_info") else 0
+                    procs.append((
+                        str(pi["pid"]), pi["name"][:24],
+                        f"{pi['cpu_percent']:.1f}", str(mem_mb), pi["status"],
+                    ))
+            except (PermissionError, OSError):
+                procs = []
             return (cpu_card, ram_card, disk_card, net_card), procs
 
         except ImportError:
@@ -3697,22 +3951,42 @@ class KernelWindow(BradWindow):
         t = self.query_one("#ktask-table", DataTable)
         t.add_columns("PID", "Name", "User", "State", "CPU s", "Uptime s")
         self._refresh()
+        # Live view while the desktop scheduler pump advances tasks
+        self.set_interval(1.0, self._refresh)
 
     def _refresh(self) -> None:
         kernel = self.app.kernel
         t      = self.query_one("#ktask-table", DataTable)
         t.clear()
         if kernel:
-            for task in kernel.list_tasks():
-                t.add_row(str(task["pid"]), task["name"], task["user"],
-                          task["state"], str(task["cpu_s"]), str(task["uptime_s"]))
+            tasks = kernel.list_tasks()
+            if tasks:
+                for task in tasks:
+                    t.add_row(str(task["pid"]), task["name"], task["user"],
+                              task["state"], str(task["cpu_s"]), str(task["uptime_s"]))
+            else:
+                t.add_row("—", "No tasks running", "", "", "", "")
         else:
             t.add_row("—", "Kernel not attached", "", "", "", "")
+
+        # Shared-memory snapshot from desktop kernel tasks
+        txt = ""
+        if kernel:
+            shmem = getattr(kernel, "_shmem", {}) or {}
+            shmem_clock = shmem.get("sys.clock")
+            shmem_status = shmem.get("sys.status")
+            if shmem_clock or shmem_status:
+                txt += "[bold #00d4ff]Shared Memory:[/]\n"
+                if shmem_clock:
+                    txt += f"  [#00d4ff]sys.clock[/]   [#ecf0f1]{shmem_clock}[/]\n"
+                if shmem_status:
+                    txt += f"  [#00d4ff]sys.status[/]  [#7f8c8d]{shmem_status!r}[/]\n"
+                txt += "\n"
 
         # VFS mounts
         vfs    = self.app.vfs
         mounts = vfs.mounts() if vfs else []
-        txt    = "[bold #00d4ff]VFS Mounts:[/]\n"
+        txt   += "[bold #00d4ff]VFS Mounts:[/]\n"
         for m in mounts:
             txt += f"  [#00d4ff]{m['path']:<16}[/] [#7f8c8d]{m['driver']}[/]\n"
         if not mounts:
@@ -3762,6 +4036,7 @@ class NotesWindow(BradWindow):
 
         with Horizontal():
             with ScrollableContainer(id="notes-list-pane"):
+                yield Input(placeholder="🔍 Search notes…", id="notes-search")
                 yield ListView(id="notes-list")
             with Vertical(id="notes-edit-pane"):
                 yield Input(placeholder="Title…", id="notes-title")
@@ -3772,6 +4047,10 @@ class NotesWindow(BradWindow):
         uname    = profile.get("username", "guest")
         self._vpath = f"/home/{uname}/notes.json"
         self._load_notes()
+
+    @on(Input.Changed, "#notes-search")
+    def _on_search(self, event: Input.Changed) -> None:
+        self._rebuild_list(event.value)
 
     def _load_notes(self) -> None:
         try:
@@ -3788,17 +4067,25 @@ class NotesWindow(BradWindow):
         except Exception as e:
             self.notify(str(e), severity="error")
 
-    def _rebuild_list(self) -> None:
+    def _rebuild_list(self, filter_q: str = "") -> None:
         lv = self.query_one("#notes-list", ListView)
         lv.clear()
-        if not self._notes:
-            lv.append(ListItem(Static("[#1e3a5f](no notes yet)[/]")))
+        filtered = self._notes
+        if filter_q:
+            q = filter_q.lower()
+            filtered = [n for n in self._notes
+                        if q in n.get("title", "").lower()
+                        or q in n.get("body", "").lower()]
+        if not filtered:
+            lv.append(ListItem(Static("[#1e3a5f](no notes yet)[/]" if not self._notes
+                                      else "[#1e3a5f](no matching notes)[/]")))
             return
-        for i, note in enumerate(self._notes):
+        for i, note in enumerate(filtered):
             ts_str = datetime.fromtimestamp(note.get("ts", 0)).strftime("%d %b %H:%M")
+            orig_idx = self._notes.index(note)
             lv.append(ListItem(
                 Static(f"[bold #ecf0f1]{note['title'][:22]}[/]\n[#7f8c8d]{ts_str}[/]"),
-                id=f"note-{i}",
+                id=f"note-{orig_idx}",
             ))
 
     @on(ListView.Selected, "#notes-list")
@@ -4552,6 +4839,9 @@ class BpkgWindow(BradWindow):
         if cat_filter != "all":
             pkgs = [p for p in pkgs if p and p.category == cat_filter]
 
+        if not pkgs:
+            t.add_row("[#1e3a5f](no packages found)[/]", "", "", "")
+            return
         for p in pkgs:
             if not p:
                 continue
@@ -4939,6 +5229,65 @@ class ConverterWindow(BradWindow):
     @on(Input.Changed, "#conv-value")
     def _on_conv_change(self) -> None:
         self._convert()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEXT TOOLS WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TextToolsWindow(BradWindow):
+    """Word/char counter + quick case conversion, backed by brados_apps.text_stats
+    and text_case_convert (pure functions, unit tested separately)."""
+
+    APP_ID: ClassVar[str] = "texttools"
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="win-titlebar"):
+            yield Static("✎  Text Tools", classes="win-title")
+            yield Button("—", id="btn-min", classes="btn-min")
+            yield Button("✕", id="btn-close", classes="win-close")
+        with Vertical():
+            yield TextArea("", id="tt-input")
+            with Horizontal(id="tt-case-row"):
+                yield Button("UPPER",    id="case-upper",    classes="folder-btn")
+                yield Button("lower",    id="case-lower",    classes="folder-btn")
+                yield Button("Title",    id="case-title",    classes="folder-btn")
+                yield Button("Sentence", id="case-sentence", classes="folder-btn")
+                yield Button("tOGGLE",   id="case-toggle",   classes="folder-btn")
+            yield Static("", id="tt-stats")
+
+    def on_mount(self) -> None:
+        self._refresh_stats()
+
+    def _refresh_stats(self) -> None:
+        from brados_apps import text_stats
+        text = self.query_one("#tt-input", TextArea).text
+        s = text_stats(text)
+        self.query_one("#tt-stats", Static).update(
+            f"[bold #00d4ff]{s['words']}[/] words   "
+            f"[bold #00d4ff]{s['chars']}[/] chars "
+            f"([#7f8c8d]{s['chars_no_spaces']} w/o spaces[/])   "
+            f"[bold #00d4ff]{s['lines']}[/] lines   "
+            f"[bold #00d4ff]{s['sentences']}[/] sentences   "
+            f"[#7f8c8d]~{s['reading_time_min']} min read[/]"
+        )
+
+    @on(TextArea.Changed, "#tt-input")
+    def _on_text_changed(self) -> None:
+        self._refresh_stats()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-close":
+            self.dismiss(); return
+        if bid and bid.startswith("case-"):
+            from brados_apps import text_case_convert
+            mode = bid[5:]
+            ta = self.query_one("#tt-input", TextArea)
+            ta.text = text_case_convert(ta.text, mode)
+            self._refresh_stats()
+            return
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6179,7 +6528,6 @@ class _FilePickerModal(ModalScreen):
 
         # Parent dir entry
         if path != "/":
-            parent = path.rstrip("/").rsplit("/", 1)[0] or "/"
             lv.append(ListItem(
                 Static("[#ffa502]⬆ ..[/]"),
                 id="fp-parent",
@@ -6291,6 +6639,13 @@ class BradOSShell(App):
     vfs          : VirtualFileSystem | None = None
     drivers      : DriverRegistry    | None = None
     security     : BradSec | None = None
+    proc_mgr     : Any | None = None  # ProcessManager (optional)
+    kernel       : BradOSKernel | None = None
+    # Textual applies the initial stylesheet before on_mount() runs, so
+    # _theme must have a real value from the moment the class exists —
+    # otherwise every $bg_base/$accent/etc. reference is unresolved and
+    # the app crashes on launch before it ever gets to load the saved theme.
+    _theme       : dict[str, str]    = THEMES["ocean_dark"]
 
     def __init__(self):
         super().__init__()
@@ -6298,10 +6653,33 @@ class BradOSShell(App):
 
     def on_mount(self) -> None:
         init_dirs()
+        # Kernel is required for ProcFS + the Kernel task table. run_shell()
+        # always attaches one; constructing BradOSShell() directly also works.
+        if self.kernel is None:
+            self.kernel = BradOSKernel()
         self.vfs      = create_default_vfs(kernel=self.kernel)
         self.drivers  = create_default_registry(vfs=self.vfs)
         self.security = get_bradsec()
         self.security.start()
+        # Wire capability-based security into the VFS
+        self.vfs.set_sec(self.security)
+        # Issue a session token for desktop apps
+        cap = self.security.issue_token(
+            pid=0, uid=1000,
+            caps=Cap.default_user(),
+        )
+        self.vfs.set_default_pid(0)
+        # ProcessManager for real subprocess management
+        try:
+            from brados_process import ProcessManager as _PM
+            self.proc_mgr = _PM(vfs=self.vfs)
+        except Exception:
+            self.proc_mgr = None
+        # Attach subsystems to the kernel and spawn desktop-visible tasks
+        self._wire_kernel()
+        self._boot_kernel_tasks()
+        # Cooperative scheduler pump — non-blocking tick for the TUI loop
+        self.set_interval(0.1, self._kernel_tick)
         # Load config & apply theme
         self.config = load_config()
         self._set_theme(self.config.get("theme", "ocean_dark"))
@@ -6327,6 +6705,45 @@ class BradOSShell(App):
             except Exception:
                 pass
         self.push_screen(SplashScreen())
+
+    def _wire_kernel(self) -> None:
+        """Attach VFS / drivers / security / process manager to the kernel."""
+        k = self.kernel
+        if k is None:
+            return
+        k.vfs = self.vfs
+        k.drivers = self.drivers
+        k.sec = self.security
+        k.proc_mgr = self.proc_mgr
+
+    def _boot_kernel_tasks(self) -> None:
+        """Spawn always-on tasks so the Kernel window is never empty theater."""
+        k = self.kernel
+        if k is None:
+            return
+        existing = {t["name"] for t in k.list_tasks()}
+        if "DesktopClock" not in existing:
+            k.create_task("DesktopClock", desktop_clock_task, uid=1000, nice=10)
+        if "SysStatus" not in existing:
+            k.create_task("SysStatus", desktop_status_task, uid=1000, nice=15)
+
+    def _kernel_tick(self) -> None:
+        """Advance the cooperative scheduler one non-blocking epoch."""
+        k = self.kernel
+        if k is not None:
+            k.tick()
+
+    def on_minimize_app(self, message: MinimizeApp) -> None:
+        """MinimizeApp bubbles from the pushed BradWindow screen up to the App —
+        it does NOT reach DesktopScreen directly, since sibling screens on the
+        stack aren't DOM ancestors of each other. Find the live DesktopScreen
+        instance (still mounted underneath, just not on top) and update it
+        there instead."""
+        for screen in self.screen_stack:
+            if isinstance(screen, DesktopScreen):
+                screen._minimized.add(message.app_id)
+                screen._refresh_taskbar()
+                break
 
     def _notify_and_store(self, message: str, severity: str = "information") -> None:
         from datetime import datetime
@@ -6377,8 +6794,14 @@ class BradOSShell(App):
 
 
 def run_shell(kernel=None) -> None:
-    """Entry point called from brados.py with --shell flag."""
-    app         = BradOSShell()
-    app.kernel  = kernel
+    """Entry point called from brados.py with --shell flag.
+
+    Always attaches a live BradOSKernel so the desktop, ProcFS, and Kernel
+    task table share one real runtime (not a None placeholder).
+    """
+    if kernel is None:
+        kernel = BradOSKernel()
+    app = BradOSShell()
+    app.kernel = kernel
     app.run()
 
