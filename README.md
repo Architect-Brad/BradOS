@@ -1,253 +1,157 @@
 # ⬡ BradOS
 
-**v3.0.0 · Ocean Dark · The only real OS-layer that runs in a terminal.**
+**v3.0 · Ocean Dark · A pure-Python userland OS layer for the terminal.**
 
-No other Python project in this space has a kernel, a mount-table VFS, capability-based security, real TCP networking, and a 14-app TUI desktop. BradOS is not a menu loop with print statements. It is a working software stack.
+BradOS is a **cooperative microkernel + mount-table VFS + capability security + Textual desktop** you can run over SSH or Termux. It is **not** a host operating system and does **not** replace Linux — it runs *on* Python and uses the host for real sockets, processes, and files (inside a sandbox).
 
-```
+```bash
+pip install textual
 python brados.py --shell
 ```
 
 ---
 
-## What makes BradOS unique
+## What BradOS is / isn’t
 
-Every other "Python OS" project is cosmetic — fake progress bars, fake authentication, Wi-Fi ON/OFF toggles that flip a boolean. BradOS does the real thing:
+| Is | Isn’t |
+|----|--------|
+| A layered **userland OS demo** with real subsystems | A bootable OS or kernel module |
+| VFS with path traversal checks + capability gates | A full multi-user MAC like SELinux |
+| HMAC-signed capability tokens enforced on VFS ops | Kernel-enforced isolation between host processes |
+| Cooperative tasks with 35 syscalls + non-blocking `tick()` | Preemptive SMP scheduling |
+| A TUI desktop (Textual) with many apps | A replacement for your window manager |
 
-**Kernel.** 35 syscalls. Priority-weighted cooperative scheduler (nice 0–19). Shared memory, named pipes, real subprocess fork/wait, IOCTL device control.
-
-**VFS.** Mount-table filesystem with 6 drivers: MemFS (in-memory trie), LocalFS (sandboxed host with atomic writes and path-traversal protection), ProcFS (live kernel stats), DevFS (/dev/null, /dev/random, /dev/zero, /dev/tty, /dev/kmsg).
-
-**Network.** Real TCP/UDP sockets via the host kernel. DNS resolution. HTTP client with `requests` preferred, `urllib` fallback. TCP listen/accept. UDP sendto/recvfrom.
-
-**Security.** HMAC-SHA256 capability tokens (tampering-detected on modification). PBKDF2-260k password hashing. SHA-256 file integrity daemon. PBKDF2+Fernet encrypted vault. Threat scanner that checks world-writable files, open ports (including known backdoor ports), weak permissions, and plaintext passwords.
-
-**Desktop.** Splash → Login → Icon grid → Taskbar. 14 apps. Minimize/restore. Keyboard shortcuts. Live CPU/RAM tray. Staggered entrance animation. Ocean Dark theme. All in Textual.
-
-**Tests.** 65+ pytest tests covering every subsystem, including async workers, token tampering detection, path traversal blocking, and scheduler correctness.
+Many “Python OS” toys are menu loops and fake progress bars. BradOS aims higher: **checkable behavior** (tests, deny demos, live Kernel tasks) rather than marketing alone.
 
 ---
 
-## Architecture (14,640 lines, 15 files)
+## 60-second demo (the “wow” path)
 
-```
-brados.py                  ← Entry point
-│
-├── brados_shell.py        ← Textual desktop (3173 lines)
-│     14 screens            Splash, Login, Desktop, 14 app windows
-│
-├── brados_kernel_core.py  ← Cooperative microkernel (707 lines)
-│     35 syscalls            VFS I/O, sockets, fork/wait, pipes, SHMEM
-│     Priority scheduler     nice 0-19, weighted round-robin
-│     PBKDF2 auth            auto-rehash legacy passwords
-│
-├── brados_vfs.py          ← Virtual filesystem (697 lines)
-│     6 mountable drivers    MemFS, LocalFS, ProcFS, DevFS, VarFS
-│     Thread-safe            All operations under RLock
-│     Atomic writes          tmp → replace, crash-safe
-│
-├── brados_drivers.py      ← Driver subsystem (651 lines)
-│     6 drivers              Network, Display, Storage, Input, Audio, Process
-│     Singleton registry     init/shutdown lifecycle, graceful degradation
-│
-├── brados_security.py     ← BradSec security + daemon (1,417 lines)
-│     BradSec daemon         Unix socket IPC at brodos_files/brados_sec.sock
-│     Policy engine          YAML per-process capability rules, auto-response
-│     File watcher           inotify real-time integrity, polling fallback
-│     Capability tokens      HMAC-SHA256 signed, TTL, tamper-proof
-│     Encrypted vault        PBKDF2 → Fernet, XOR fallback
-│     Threat scanner         perms, ports, hashes, known backdoor ports
-│     Audit log              NDJSON append-only, streamable, greppable
-│
-├── brados_policy.yaml     ← Per-process capability policy (auto-created)
-│
-├── brados_apps.py         ← Classic-mode apps (967 lines)
-│     Safe eval              AST-based math evaluator (no exec())
-│     HTML parser            Skip-stack, handles nested <head><script>
-│     Mail, browser, calc, editor, games, hub
-│
-├── brados_system.py       ← System layer (734 lines)
-│     Emoji detection        Probes LANG/LC_ALL/TERM_PROGRAM
-│     Profile management     Atomic JSON, auto-backfill
-│     Diagnostics            Real module imports, Python version checks
-│
-├── brados_bpkg.py         ← Package manager (587 lines)
-│     8 curated packages     psutil, requests, cryptography, Pillow, pyte
-│     Remote registry        GitHub-sourced, 6h cache TTL
-│     pip integration        Streaming output, dependency resolution
-│
-└── brados_test.py         ← Test suite (656 lines)
-      Subsystem tests         VFS, Drivers, Kernel, Security, Apps, Shell, bpkg
-      Async tests             Workers avoid blocking the event loop
-      Lint enforcement        no call_from_thread, no @work(thread=True)
-```
+1. **Launch**
+   ```bash
+   git clone https://github.com/Architect-Brad/BradOS.git
+   cd BradOS
+   pip install textual
+   python brados.py --shell
+   ```
+2. Pass splash / login (guest is fine).
+3. Press **`Ctrl+K`** → **Kernel** task table.  
+   You should see **DesktopClock** and **SysStatus** with live state / CPU time. Shared memory shows `sys.clock` after a second.
+4. Press **`Shift+S`** → **BradSec** → **⚡ Cap Demo** (or the Cap Demo button).  
+   Expect **PASS** on:
+   - Guest VFS write **DENIED** (no `FS_WRITE`)
+   - Guest VFS read **allowed**
+   - Session VFS write **allowed**
+   - `check_cap(guest, FS_WRITE) = False`
+5. Optional: **Files** app, open `/proc/version` via VFS-backed paths; **Monitor** if `psutil` is installed.
+
+That’s the product story: *live kernel tasks + real capability deny*, not a wallpaper OS.
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
-# Clone
 git clone https://github.com/Architect-Brad/BradOS.git
 cd BradOS
 
-# One dependency required (textual). Everything else optional.
+# Required for the desktop
 pip install textual
 
-# Launch the desktop
-python brados.py --shell
+# Recommended optional deps
+pip install psutil requests cryptography pyyaml mutagen
 
-# With optional enhancements
-pip install psutil requests cryptography
-python brados.py --shell
+python brados.py --shell     # Ocean Dark desktop (recommended)
+python brados.py             # Classic menu / mode selector
+python brados.py --daemon    # BradSec background daemon only
 
-# Run the test suite (65+ tests)
+# Tests (130+)
 pip install pytest pytest-asyncio
 pytest brados_test.py -v
 ```
 
+**Termux (Android):** see [TERMUX.md](TERMUX.md) and `bash scripts/termux-setup.sh`.
+
+### Modes
+
+| Command | Purpose |
+|---------|---------|
+| `python brados.py --shell` | Full desktop (default experience) |
+| `python brados.py` | Classic interactive menus |
+| `python brados.py --daemon` | BradSec daemon |
+| `python brados.py --gui` | **Legacy** purple Textual UI (unmaintained; prefer `--shell`) |
+
 ---
 
-## BradSec — Security (not cosmetic)
+## Architecture
+
+```
+brados.py                  ← Entry + mode dispatch
+│
+├── brados_shell.py        ← Textual desktop (splash, login, apps)
+├── brados_kernel_core.py  ← Cooperative microkernel (syscalls, tick/run)
+├── brados_vfs.py          ← Mount-table VFS (Mem/Local/Proc/Dev + caps)
+├── brados_process.py      ← Host subprocesses exposed under /proc/<pid>
+├── brados_drivers.py      ← Network, display, storage, input, audio, …
+├── brados_security.py     ← BradSec tokens, vault, scan, daemon, cap demo
+├── brados_brash.py        ← Terminal shell (aliases, && / || / ;)
+├── brados_bpkg.py         ← Package manager (checksum-pinned scripts)
+├── brados_music.py        ← Music player window
+├── brados_mesh.py         ← LAN mesh helpers
+├── brados_apps.py         ← Classic-mode apps + pure helpers
+├── brados_system.py       ← Profiles, ANSI, Termux/mobile helpers
+└── brados_test.py         ← Pytest suite
+```
+
+### Kernel
+
+- ~35 syscalls (VFS, sockets, fork/wait, pipes, shmem, ioctl, …)
+- Priority-weighted cooperative scheduler (`nice` 0–19)
+- **`tick()`** for embedding in the Textual loop (non-blocking sleeps)
+- Desktop boots **DesktopClock** + **SysStatus** into shared memory
+
+### VFS
+
+- Drivers: MemFS, LocalFS (sandboxed host paths, atomic writes), ProcFS, DevFS
+- Path traversal blocked on LocalFS
+- Optional BradSec: `caller_pid` must hold `FS_READ` / `FS_WRITE`
+
+### BradSec
+
+- HMAC-SHA256 capability tokens (tamper-evident)
+- Guest vs session demo: `run_capability_demo(vfs)` / UI **Cap Demo**
+- Integrity baseline (SHA-256), vault (Fernet or XOR fallback), NDJSON audit
+- Optional daemon + `brados_policy.yaml`
+
+### Desktop
+
+- Splash → Login → icon grid / start menu → taskbar
+- Apps include terminal, files, editor, browser, mail, BradSec, bpkg, games, music, mesh, …
+- Ocean Dark theme; keyboard shortcuts below
+
+---
+
+## Capability demo (code)
 
 ```python
-from brados_security import BradSec, Cap
+from brados_security import BradSec, Cap, run_capability_demo, DEMO_GUEST_PID
+from brados_vfs import create_default_vfs
 
 sec = BradSec()
 sec.start()
-
-# Issue a signed capability token
-token = sec.issue_token(pid=1, uid=1000,
-                        caps=Cap.FS_READ | Cap.NET_SEND)
-
-# Check capabilities — HMAC-SHA256 verified every call
-sec.check_cap(pid=1, cap=Cap.FS_WRITE)   # False
-sec.check_cap(pid=1, cap=Cap.NET_SEND)   # True
-
-# Integrity check — SHA-256 of all .py/.json/.log files
-findings = sec.verify_integrity()
-
-# Threat scan — real checks, not fake progress bars
-findings = sec.scan()
-# World-writable files? Weak password hashes? Open ports? Reported.
-
-# Encrypted vault — PBKDF2 → Fernet (or XOR fallback)
-sec.unlock_vault("master_password")
-sec.vault.put("api_key", "sk-...")
-sec.vault.get("api_key")
-
-# Append-only NDJSON audit trail
-sec.audit.write("INFO", "AUTH", "User logged in", {"user": "brad"})
-sec.audit.tail(50)
-```
-
-### Daemon & Policy
-
-```python
-from brados_security import get_bradsec_daemon
-
-daemon = get_bradsec_daemon()
-daemon.start()
-
-# Daemon enforces per-process capability policies
-# Real-time file watcher detects tampering
-# Auto-response: kill, quarantine, or warn
-
-# IPC via Unix socket (no network stack needed)
-# Policy: brados_policy.yaml (auto-created)
-```
-
----
-
-## VFS — Virtual Filesystem
-
-```python
-from brados_vfs import create_default_vfs
-
 vfs = create_default_vfs()
+vfs.set_sec(sec)
 
-# Standard operations — works across all mounted drivers
-vfs.write_text("/home/user/notes.txt", "BradOS v3")
-vfs.read_text("/home/user/notes.txt")
-vfs.listdir("/home/user")
-vfs.stat("/home/user/notes.txt")   # → VFSStat(.size, .mode_str, .mtime…)
+results = run_capability_demo(vfs, sec)
+assert all(r["ok"] for r in results)
 
-# Virtual filesystems
-vfs.read_text("/proc/version")      # "BradOS version 3.0.0 (Python 3.12…)"
-vfs.read_text("/proc/cpuinfo")      # vendor_id: BradOS
-vfs.read_text("/proc/meminfo")      # MemTotal / MemFree / SwapTotal
-vfs.read("/dev/random", 16)         # 16 cryptographically random bytes
-vfs.write("/dev/null", b"discard")  # silently consumed
-
-# Path traversal is blocked
-vfs.read("/home/../../../etc/passwd")  # → PermissionError
-
-# Walk
-for dirpath, dirs, files in vfs.walk("/"):
-    print(dirpath, files)
+# Guest still cannot write:
+# vfs.write_text("/tmp/x", "nope", caller_pid=DEMO_GUEST_PID)  → PermissionError
 ```
 
 ---
 
-## Kernel — 35 Syscalls
-
-```python
-from brados_kernel_core import BradOSKernel, SC
-
-kernel = BradOSKernel()
-kernel.vfs     = vfs
-kernel.drivers = drivers
-
-# Tasks are generators. yield = syscall. send() = return value.
-def my_task():
-    yield (SC.VFS_WRITE, "/tmp/data.txt", b"hello from kernel")
-    content = yield (SC.VFS_READ, "/tmp/data.txt")
-    fd = yield (SC.CONNECT, "example.com", 443, 10.0)
-    yield (SC.SEND_SOCK, fd, b"GET / HTTP/1.1\r\nHost: ...\r\n\r\n")
-    data = yield (SC.RECV_SOCK, fd, 4096)
-    yield (SC.CLOSE_SOCK, fd)
-    yield (SC.SHMEM_PUT, "result", data)
-    yield (SC.EXIT,)
-
-pid = kernel.create_task("MyTask", my_task, uid=1000, nice=5)
-kernel.run()
-```
-
-**Scheduler:** Priority-weighted round-robin. nice=0 gets 5 consecutive turns per epoch; nice=19 gets 1. Sleeping tasks are skipped (non-blocking). Zombie tasks are collected.
-
-**Syscall categories:**
-- Core I/O (PRINT, INPUT, SLEEP, EXIT, GET_TIME)
-- Filesystem (READ_FILE, WRITE_FILE, LIST_DIR — legacy host-direct)
-- VFS (VFS_READ, VFS_WRITE, VFS_LIST, VFS_STAT, VFS_MKDIR, VFS_UNLINK)
-- Networking (SOCKET, CONNECT, SEND_SOCK, RECV_SOCK, CLOSE_SOCK)
-- Process (SPAWN, GETPID, SIGNAL, FORK, WAIT)
-- IPC (PIPE_OPEN, PIPE_WRITE, PIPE_READ, NET_SEND, NET_RECV)
-- Shared Memory (SHMEM_PUT, SHMEM_GET, SHMEM_DEL)
-- Device (IOCTL)
-
----
-
-## Test Suite — 65+ tests, real coverage
-
-```bash
-pip install pytest pytest-asyncio
-pytest brados_test.py -v
-```
-
-| Module | Tests | What's verified |
-|--------|-------|-----------------|
-| VFS | 11 | write/read, listdir, mkdir, unlink, rename, procfs, devfs, memfs, path traversal, walk |
-| Drivers | 8 | registry, display size/colors, network hostname/IP, storage free, missing driver |
-| Kernel | 11 | VFS syscalls, SHMEM, pipes, IOCTL, NET_SEND/RECV, auth, password hashing, scheduler |
-| BradSec | 12 | token issue/verify/tamper/revoke, audit, integrity, vault, scanner, status |
-| Apps | 6 | safe_eval (builtins blocked), HTML parser (script/style nested stripping) |
-| Shell | 13 | class hierarchy, APP_ID verification, lint rules, manifest completeness |
-| bpkg | 13 | registry search, install/remove, persistence, categories, pip status |
-| Async | 4 | worker thread safety, event loop non-blocking |
-
----
-
-## Keyboard Shortcuts
+## Keyboard shortcuts
 
 | Key | App | Key | App |
 |-----|-----|-----|-----|
@@ -256,28 +160,21 @@ pytest brados_test.py -v
 | `m` | Mail | `n` | Notes |
 | `c` | Calculator | `k` | Clock |
 | `p` | Monitor | `g` | Logs |
-| `Ctrl+K` | Kernel Tasks | `s` | Settings |
+| `Ctrl+K` | Kernel tasks | `s` | Settings |
 | `Shift+S` | BradSec | `Ctrl+P` | bpkg |
-| `l` | Logout | `q` | Quit |
-| `F1` | Help | `—` Minimize |
+| `l` | Logout | `q` / `Ctrl+Q` | Quit |
+| `F1` | Help | `—` | Minimize |
 
 ---
 
-## bpkg — Package Manager
+## Tests & CI
 
 ```bash
-# Inside BradOS: open the bpkg app
-# Available packages:
-
-brad-psutil      Live CPU/RAM/disk metrics    pip: psutil
-brad-requests    Full HTTPS for browser        pip: requests
-brad-crypto      Fernet vault encryption       pip: cryptography
-brad-imaging     SVG viewer + image processing pip: Pillow, cairosvg
-brad-pty         VT100 PTY terminal            pip: pyte
-brad-audio       System sounds + music         pip: playsound
-brad-full        Install everything above      meta-package
-brad-dev         pytest, mypy, black, ruff     dev tools
+pip install pytest pytest-asyncio textual
+pytest brados_test.py -v
 ```
+
+Coverage includes VFS, drivers, kernel (`tick`, desktop tasks), BradSec (tokens, vault, **capability demo**), brash, bpkg trust model, shell boot (kernel always attached), and CSS health checks. GitHub Actions runs the suite on Python 3.12–3.14.
 
 ---
 
@@ -285,32 +182,28 @@ brad-dev         pytest, mypy, black, ruff     dev tools
 
 | Package | Required | Purpose |
 |---------|----------|---------|
-| `textual` | **Yes** | TUI framework (the only hard dep) |
-| `psutil` | Optional | Live CPU/RAM/disk in tray + Monitor |
-| `requests` | Optional | HTTPS in browser (stdlib fallback exists) |
-| `cryptography` | Optional | Fernet vault (XOR fallback exists) |
+| `textual` | **Yes** (desktop) | TUI framework |
+| `mutagen` | Declared for music | Tags in BradMusic (player degrades without backends) |
+| `psutil` | Optional | Live CPU/RAM/disk |
+| `requests` | Optional | HTTPS browser (urllib fallback) |
+| `cryptography` | Optional | Fernet vault (XOR fallback) |
+| `pyyaml` | Optional | Policy files |
 | `pytest` | Dev | Test suite |
 
-Everything else: `asyncio`, `hashlib`, `socket`, `json`, `os`, `threading`, `queue`, `dataclasses`, `enum`, `abc`, `html.parser`, `subprocess`, `platform`, `shutil`, `random`, `time`, `datetime`, `math`, `functools`, `pathlib`, `typing`.
-
-**Zero native deps. Zero compiled extensions. Pure Python. Runs everywhere Python runs.**
+Pure Python application code — no custom C extensions.
 
 ---
 
-## Modes
+## bpkg (in-desktop packages)
 
-```bash
-python brados.py --shell     # Ocean Dark desktop (recommended — full experience)
-python brados.py --gui       # Legacy Textual GUI (purple theme)
-python brados.py             # Interactive mode selector
-```
+Curated extras: `brad-psutil`, `brad-requests`, `brad-crypto`, `brad-imaging`, `brad-pty`, `brad-audio`, `brad-full`, `brad-dev`. Remote install scripts must match pinned SHA-256; builtins are trusted in-tree.
 
 ---
 
 ## License
 
-MIT — go ahead, build on it.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
-*14,640 lines of Python. Zero kernel modules. Zero C extensions. A genuine OS-layer that fits in a terminal.*
+*A genuine userland OS-layer that fits in a terminal: VFS, capabilities, cooperative kernel, and a desktop you can demo in under a minute.*
