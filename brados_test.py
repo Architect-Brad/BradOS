@@ -1231,6 +1231,24 @@ class TestLoginMobile:
         assert "…" in long or len(long.split("\n")[-1]) <= 10
 
 
+class TestMobileTouchControls:
+    """On-screen controls for Termux (no soft keyboard)."""
+
+    def test_calculator_mobile_pad_has_digits(self, monkeypatch):
+        monkeypatch.setattr("brados_shell.is_mobile_display", lambda: True)
+        from brados_shell import CalculatorWindow
+        ids = {b[2] for b in CalculatorWindow._BTNS_MOBILE}
+        assert "c-7" in ids and "c-eq" in ids and "c-0" in ids
+        # Mobile pad is smaller than full scientific
+        assert len(CalculatorWindow._BTNS_MOBILE) < len(CalculatorWindow._BTNS_FULL)
+
+    def test_dpad_id_conventions(self):
+        # Handlers in Snake/2048 bind to these id shapes
+        for prefix in ("snake", "g2048"):
+            for d in ("up", "down", "left", "right", "action"):
+                assert f"{prefix}-{d}"
+
+
 class TestDesktopMinimize:
     """MinimizeApp is posted by a BradWindow (a Screen) and previously only
     had a handler on DesktopScreen — but sibling Screens on the stack are not

@@ -1136,6 +1136,55 @@ ScrollBar > .scrollbar--thumb:hover { background: #243450; }
 .cbtn.fn  { background: #2ed57322; border: round #2ed57366; color: #2ed573; }
 .cbtn.fn:hover { background: #2ed57344; }
 
+/* Mobile: bigger tap targets, hide history to free vertical space for keypad */
+.mobile #calc-hist { display: none; height: 0; }
+.mobile #calc-display { height: 5; }
+.mobile .calc-row { height: 4; margin: 0 0 1 0; }
+.mobile .cbtn { height: 4; min-height: 4; }
+
+/* ── On-screen D-pad (games / mobile) ───── */
+#dpad {
+    height: auto;
+    width: 100%;
+    align: center middle;
+    padding: 0 1 1 1;
+}
+.dpad-row {
+    width: 100%;
+    height: 3;
+    align: center middle;
+    margin: 0 0 1 0;
+}
+.dpad-btn {
+    width: 1fr;
+    max-width: 12;
+    height: 3;
+    min-height: 3;
+    margin: 0 1;
+    background: #1a2740;
+    border: round #1e3a5f;
+    color: #00d4ff;
+    text-style: bold;
+    content-align: center middle;
+    text-align: center;
+}
+.dpad-btn:hover {
+    border: round #00d4ff;
+    background: #243450;
+}
+.mobile .dpad-btn { height: 4; min-height: 4; }
+.mobile .dpad-row { height: 4; }
+
+/* Minesweeper flag-mode toggle */
+#mine-flag-mode {
+    min-width: 12;
+}
+.mine-flag-on {
+    background: #ffa50233;
+    border: round #ffa502;
+    color: #ffa502;
+}
+
 /* ── Monitor ────────────────────────────── */
 
 #monitor-grid {
@@ -2355,6 +2404,11 @@ class BradWindow(Screen):
     def on_mount(self) -> None:
         self.styles.opacity = 0.0
         self.styles.animate("opacity", 1.0, duration=0.2)
+        # Enable .mobile CSS for this window (calc keypad sizing, etc.)
+        if is_mobile_display():
+            self.add_class("mobile")
+        elif is_tablet_display():
+            self.add_class("tablet")
 
     def dismiss(self, result=None) -> None:
         self.styles.animate("opacity", 0.0, duration=0.15)
@@ -3844,12 +3898,46 @@ class _MailSettingsModal(ModalScreen):
 # CALCULATOR WINDOW
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _compose_dpad(prefix: str = "dpad") -> ComposeResult:
+    """On-screen direction pad for touch / Termux (no soft keyboard required)."""
+    with Vertical(id="dpad"):
+        with Horizontal(classes="dpad-row"):
+            yield Static("")
+            yield Button("▲", id=f"{prefix}-up", classes="dpad-btn")
+            yield Static("")
+        with Horizontal(classes="dpad-row"):
+            yield Button("◀", id=f"{prefix}-left", classes="dpad-btn")
+            yield Button("●", id=f"{prefix}-action", classes="dpad-btn")
+            yield Button("▶", id=f"{prefix}-right", classes="dpad-btn")
+        with Horizontal(classes="dpad-row"):
+            yield Static("")
+            yield Button("▼", id=f"{prefix}-down", classes="dpad-btn")
+            yield Static("")
+
+
 class CalculatorWindow(BradWindow):
     APP_ID: ClassVar[str] = "calculator"
     BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
     _expr:  str       = ""
     _res:   str       = "0"
     _hist:  list[str] = []
+
+    # Full scientific pad (desktop); simpler pad on narrow mobile for bigger keys
+    _BTNS_FULL = [
+        ("C",  "clr", "c-C"),   ("±",  "op",  "c-pm"),  ("π",  "fn",  "c-pi"),  ("÷",  "op",  "c-div"),
+        ("7",  "",    "c-7"),   ("8",  "",    "c-8"),   ("9",  "",    "c-9"),   ("×",  "op",  "c-mul"),
+        ("4",  "",    "c-4"),   ("5",  "",    "c-5"),   ("6",  "",    "c-6"),   ("−",  "op",  "c-neg"),
+        ("1",  "",    "c-1"),   ("2",  "",    "c-2"),   ("3",  "",    "c-3"),   ("+",  "op",  "c-add"),
+        ("sin","fn",  "c-sin"), ("cos","fn",  "c-cos"), ("√",  "fn",  "c-sqrt"),("=",  "eq",  "c-eq"),
+        ("0",  "",    "c-0"),   (".",  "",    "c-dot"), ("⌫",  "clr", "c-del"), ("^",  "op",  "c-pow"),
+    ]
+    _BTNS_MOBILE = [
+        ("C",  "clr", "c-C"),   ("⌫", "clr", "c-del"), ("÷", "op", "c-div"), ("×", "op", "c-mul"),
+        ("7",  "",    "c-7"),   ("8",  "",   "c-8"),   ("9", "",   "c-9"),   ("−", "op", "c-neg"),
+        ("4",  "",    "c-4"),   ("5",  "",   "c-5"),   ("6", "",   "c-6"),   ("+", "op", "c-add"),
+        ("1",  "",    "c-1"),   ("2",  "",   "c-2"),   ("3", "",   "c-3"),   ("=", "eq", "c-eq"),
+        ("0",  "",    "c-0"),   (".",  "",   "c-dot"), ("±", "op", "c-pm"),  ("√", "fn", "c-sqrt"),
+    ]
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="win-titlebar"):
@@ -3861,28 +3949,25 @@ class CalculatorWindow(BradWindow):
             yield Static("", id="calc-expr")
             yield Static("0", id="calc-result")
 
+        # History is CSS-hidden on .mobile — still mounted for desktop
         yield ScrollableContainer(Static("", id="calc-hist-content"), id="calc-hist")
 
-        _BTNS = [
-            # (label, css_class, safe_id)
-            ("C",  "clr", "c-C"),   ("±",  "op",  "c-pm"),  ("π",  "fn",  "c-pi"),  ("÷",  "op",  "c-div"),
-            ("7",  "",    "c-7"),   ("8",  "",    "c-8"),   ("9",  "",    "c-9"),   ("×",  "op",  "c-mul"),
-            ("4",  "",    "c-4"),   ("5",  "",    "c-5"),   ("6",  "",    "c-6"),   ("−",  "op",  "c-neg"),
-            ("1",  "",    "c-1"),   ("2",  "",    "c-2"),   ("3",  "",    "c-3"),   ("+",  "op",  "c-add"),
-            ("sin","fn",  "c-sin"), ("cos","fn",  "c-cos"), ("√",  "fn",  "c-sqrt"),("=",  "eq",  "c-eq"),
-            ("0",  "",    "c-0"),   (".",  "",    "c-dot"), ("⌫",  "clr", "c-del"), ("^",  "op",  "c-pow"),
-        ]
+        btns = self._BTNS_MOBILE if is_mobile_display() else self._BTNS_FULL
         with Vertical(id="calc-grid"):
-            rows = [_BTNS[i:i+4] for i in range(0, len(_BTNS), 4)]
+            rows = [btns[i:i + 4] for i in range(0, len(btns), 4)]
             for row in rows:
                 with Horizontal(classes="calc-row"):
                     for lbl, cls, bid in row:
                         yield Button(lbl, id=bid, classes=f"cbtn {cls}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-close": self.dismiss(); return
+        if event.button.id == "btn-close":
+            self.dismiss()
+            return
         if event.button.id and event.button.id.startswith("c-"):
-            self._key(event.button.label.plain.strip())
+            label = event.button.label
+            text = label.plain if hasattr(label, "plain") else str(label)
+            self._key(text.strip())
 
     def on_key(self, event) -> None:
         ch = event.character
@@ -5631,6 +5716,8 @@ class SnakeWindow(BradWindow):
         with Vertical(id="snake-body"):
             yield Static("", id="snake-grid")
             yield Static("", id="snake-score", classes="panel-heading")
+            # On-screen D-pad: Termux rarely surfaces a soft keyboard for arrow keys
+            yield from _compose_dpad("snake")
 
     def on_mount(self) -> None:
         self._calc_grid()
@@ -5638,8 +5725,13 @@ class SnakeWindow(BradWindow):
 
     def _calc_grid(self) -> None:
         term_w, term_h = os.get_terminal_size()
-        self._grid_w = max(self._MIN_GRID, min(term_w - 4, 48))
-        self._grid_h = max(self._MIN_GRID, min(term_h - 8, 32))
+        # Leave room for titlebar + score + D-pad on mobile
+        max_h = 14 if is_mobile_display() else 32
+        max_w = min(term_w - 4, 28 if is_mobile_display() else 48)
+        reserve = 14 if is_mobile_display() else 8
+        self._grid_w = max(self._MIN_GRID, min(max_w, 48))
+        self._grid_h = max(8 if is_mobile_display() else self._MIN_GRID,
+                           min(term_h - reserve, max_h))
 
     def _start_game(self) -> None:
         self._calc_grid()
@@ -5710,20 +5802,38 @@ class SnakeWindow(BradWindow):
             f"[bold #00d4ff]Score: {self._score}[/]  [#7f8c8d]{self._grid_w}x{self._grid_h}[/]"
         )
 
+    def _set_dir(self, key: str) -> None:
+        if not self._running and not self._game_over:
+            return
+        opposite = {(0, 1): (0, -1), (0, -1): (0, 1), (1, 0): (-1, 0), (-1, 0): (1, 0)}
+        new_dir = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(key)
+        if new_dir and new_dir != opposite.get(self._dir):
+            self._next_dir = new_dir
+
     def on_key(self, event: Key) -> None:
         if event.key == "space" and self._game_over:
             self._start_game()
             return
         if not self._running:
             return
-        opposite = {(0, 1): (0, -1), (0, -1): (0, 1), (1, 0): (-1, 0), (-1, 0): (1, 0)}
-        new_dir = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(event.key)
-        if new_dir and new_dir != opposite.get(self._dir):
-            self._next_dir = new_dir
+        if event.key in ("up", "down", "left", "right"):
+            self._set_dir(event.key)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-close":
+        bid = event.button.id or ""
+        if bid == "btn-close":
             self.dismiss()
+            return
+        if bid == "snake-action":
+            # Center button = restart (especially after game over)
+            self._start_game()
+            return
+        dpad = {
+            "snake-up": "up", "snake-down": "down",
+            "snake-left": "left", "snake-right": "right",
+        }
+        if bid in dpad:
+            self._set_dir(dpad[bid])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASSWORD VAULT WINDOW
@@ -5969,6 +6079,7 @@ class MineWindow(BradWindow):
     _flag_count: int
     _start_time: float
     _timer_interval = None
+    _flag_mode: bool = False  # mobile: tap-to-flag without right-click
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="win-titlebar"):
@@ -5979,10 +6090,14 @@ class MineWindow(BradWindow):
             with Horizontal(classes="panel-heading"):
                 yield Static("[bold #00d4ff]💣 10[/]", id="mine-count")
                 yield Button("😊", id="mine-restart")
+                yield Button("🚩 Flag", id="mine-flag-mode")
                 yield Static("[bold #00d4ff]⏱ 0[/]", id="mine-timer")
             yield Grid(id="mine-grid")
 
     def on_mount(self) -> None:
+        # Smaller board on phone so cells stay tappable
+        if is_mobile_display():
+            self._ROWS, self._COLS, self._MINES = 8, 7, 8
         self._init_game()
 
     def _init_game(self) -> None:
@@ -5993,6 +6108,7 @@ class MineWindow(BradWindow):
         self._first_click = True
         self._flag_count = 0
         self._start_time = 0.0
+        self._flag_mode = False
         if self._timer_interval:
             try:
                 self._timer_interval.cancel()
@@ -6001,18 +6117,33 @@ class MineWindow(BradWindow):
             self._timer_interval = None
         self._build_grid()
         self._update_header()
+        self._sync_flag_btn()
+
+    def _sync_flag_btn(self) -> None:
+        try:
+            btn = self.query_one("#mine-flag-mode", Button)
+            if self._flag_mode:
+                btn.label = "🚩 ON"
+                btn.add_class("mine-flag-on")
+            else:
+                btn.label = "🚩 Flag"
+                btn.remove_class("mine-flag-on")
+        except NoMatches:
+            pass
 
     def _build_grid(self) -> None:
         grid = self.query_one("#mine-grid", Grid)
         grid.remove_children()
         grid.styles.grid_size_rows = self._ROWS
         grid.styles.grid_size_columns = self._COLS
+        cell_h = 2 if is_mobile_display() else 1
+        cell_w = 4 if is_mobile_display() else 3
         for r in range(self._ROWS):
             for c in range(self._COLS):
                 btn = Button("", id=f"m-{r}-{c}")
-                btn.styles.width = 3
-                btn.styles.height = 1
-                btn.styles.min_width = 3
+                btn.styles.width = cell_w
+                btn.styles.height = cell_h
+                btn.styles.min_width = cell_w
                 btn.styles.margin = (0, 0)
                 grid.mount(btn)
 
@@ -6069,6 +6200,20 @@ class MineWindow(BradWindow):
         remaining = self._MINES - self._flag_count
         self.query_one("#mine-count", Static).update(f"[bold #00d4ff]💣 {remaining}[/]")
 
+    def _toggle_flag_cell(self, r: int, c: int) -> None:
+        if self._revealed[r][c] or self._game_over:
+            return
+        btn = self.query_one(f"#m-{r}-{c}", Button)
+        if self._grid[r][c] == "F":
+            self._grid[r][c] = " "
+            self._flag_count -= 1
+            btn.label = ""
+        else:
+            self._grid[r][c] = "F"
+            self._flag_count += 1
+            btn.label = "🚩"
+        self._update_header()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
         if bid == "btn-close":
@@ -6077,12 +6222,22 @@ class MineWindow(BradWindow):
         if bid == "mine-restart":
             self._init_game()
             return
+        if bid == "mine-flag-mode":
+            self._flag_mode = not self._flag_mode
+            self._sync_flag_btn()
+            mode = "FLAG" if self._flag_mode else "REVEAL"
+            self.notify(f"Tap mode: {mode}", severity="information")
+            return
         if not bid or not bid.startswith("m-") or self._game_over:
             return
         parts = bid.split("-")
         if len(parts) != 3:
             return
         r, c = int(parts[1]), int(parts[2])
+        # Flag mode (mobile): single tap places/removes flag — no right-click needed
+        if self._flag_mode:
+            self._toggle_flag_cell(r, c)
+            return
         if self._revealed[r][c] or self._grid[r][c] == "F":
             return
         if self._first_click:
@@ -6121,18 +6276,7 @@ class MineWindow(BradWindow):
         if len(parts) != 3:
             return
         r, c = int(parts[1]), int(parts[2])
-        if self._revealed[r][c] or self._game_over:
-            return
-        btn = self.query_one(f"#{bid}", Button)
-        if self._grid[r][c] == "F":
-            self._grid[r][c] = " "
-            self._flag_count -= 1
-            btn.label = ""
-        else:
-            self._grid[r][c] = "F"
-            self._flag_count += 1
-            btn.label = "🚩"
-        self._update_header()
+        self._toggle_flag_cell(r, c)
 
     def _tick_timer(self) -> None:
         elapsed = int(time.time() - self._start_time)
@@ -6171,6 +6315,7 @@ class Game2048Window(BradWindow):
                     with Horizontal(classes="g2048-row"):
                         for c in range(self._SIZE):
                             yield Static("", id=f"g2048-{r}-{c}", classes="g2048-cell")
+            yield from _compose_dpad("g2048")
 
     def on_mount(self) -> None:
         self._reset_game()
@@ -6289,18 +6434,19 @@ class Game2048Window(BradWindow):
                     return False
         return True
 
-    def on_key(self, event) -> None:
+    def _move(self, direction: str) -> None:
         if self._game_over:
             return
-        moved = False
-        if event.key == "left":
-            moved = self._slide_left()
-        elif event.key == "right":
-            moved = self._slide_right()
-        elif event.key == "up":
-            moved = self._slide_up()
-        elif event.key == "down":
-            moved = self._slide_down()
+        movers = {
+            "left": self._slide_left,
+            "right": self._slide_right,
+            "up": self._slide_up,
+            "down": self._slide_down,
+        }
+        fn = movers.get(direction)
+        if not fn:
+            return
+        moved = fn()
         if moved:
             self._spawn_tile()
             self._render_grid()
@@ -6311,12 +6457,20 @@ class Game2048Window(BradWindow):
                 self._game_over = True
                 self.notify("Game Over! No moves left.", severity="error")
 
+    def on_key(self, event) -> None:
+        if event.key in ("left", "right", "up", "down"):
+            self._move(event.key)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id
+        bid = event.button.id or ""
         if bid == "btn-close":
             self.dismiss()
-        elif bid == "g2048-new":
+        elif bid == "g2048-new" or bid == "g2048-action":
             self._reset_game()
+        elif bid in (
+            "g2048-up", "g2048-down", "g2048-left", "g2048-right",
+        ):
+            self._move(bid.split("-")[-1])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MARKDOWN PREVIEW
