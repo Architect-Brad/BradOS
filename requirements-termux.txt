@@ -1,0 +1,20 @@
+# BradOS — Termux requirements
+#
+# Install Termux's own prebuilt packages first (they're prebuilt for Android's
+# architecture and avoid a slow from-source compile of psutil/cryptography):
+#
+#   pkg install -y python python-cryptography python-psutil
+#
+# Then install the remaining pure-Python pieces with pip:
+#
+#   pip install -r requirements-termux.txt
+#
+# If your Termux mirror doesn't have python-cryptography / python-psutil as
+# prebuilt packages, see scripts/termux-setup.sh — it installs the build
+# toolchain (clang, rust, openssl headers) and falls back to `pip install`
+# for those two instead.
+
+requests>=2.31
+pyyaml>=6.0
+pytest>=7.4
+pytest-asyncio>=0.23
