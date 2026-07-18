@@ -46,6 +46,6 @@ brados = "brados:run_shell"
 py-modules = [
     "brados", "brados_apps", "brados_bpkg", "brados_brash",
     "brados_drivers", "brados_gui", "brados_kernel", "brados_kernel_core",
-    "brados_mail_server", "brados_music", "brados_security", "brados_shell",
-    "brados_system", "brados_test", "brados_vfs"
+    "brados_mail_server", "brados_mesh", "brados_music", "brados_process",
+    "brados_security", "brados_shell", "brados_system", "brados_test", "brados_vfs",
 ]
