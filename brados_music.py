@@ -45,19 +45,26 @@ try:
     _HAS_MUTAGEN = True
 except ImportError:
     _HAS_MUTAGEN = False
+    MutagenFile = None  # type: ignore[misc, assignment]
+    MP3 = FLAC = MP4 = OggVorbis = None  # type: ignore[misc, assignment]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_MUSIC_DIR = os.path.expanduser("~/Music")
 SUPPORTED_EXTS = (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".opus")
 TERMUX_AUDIO = os.path.exists("/data/data/com.termux")
+# Backends that can play the full SUPPORTED_EXTS set (not WAV-only).
+FULL_AUDIO_BACKENDS = frozenset({"mpv", "ffplay", "ffmpeg"})
 
 # ── Tag Reader ────────────────────────────────────────────────────────────────
 
 class TagReader:
-    """Read metadata from audio files via mutagen."""
+    """Read metadata from audio files via mutagen (optional)."""
 
-    EXTS = {".mp3": MP3, ".flac": FLAC, ".m4a": MP4, ".ogg": OggVorbis, ".opus": OggVorbis}
+    EXTS = (
+        {".mp3": MP3, ".flac": FLAC, ".m4a": MP4, ".ogg": OggVorbis, ".opus": OggVorbis}
+        if _HAS_MUTAGEN else {}
+    )
 
     @staticmethod
     def read(path: str) -> dict[str, Any]:
@@ -260,6 +267,7 @@ class MusicEngine:
         self._elapsed_before_pause: float = 0.0
         self._duration: float = 0.0
         self._on_track_end: callable | None = None
+        self._last_error: str | None = None
 
     def _detect_backend(self) -> str:
         if shutil.which("mpv"):
@@ -273,10 +281,42 @@ class MusicEngine:
     def backend_name(self) -> str:
         return self._backend
 
+    def has_full_backend(self) -> bool:
+        """True when mpv/ffplay/ffmpeg can play the full format set."""
+        return self._backend in FULL_AUDIO_BACKENDS
+
+    def can_play_path(self, path: str) -> bool:
+        """Whether the active backend can reasonably play *path*."""
+        if self.has_full_backend():
+            return True
+        # wave fallback is WAV-only (and still best-effort).
+        return str(path).lower().endswith(".wav")
+
+    def status_label(self) -> str:
+        """Short control-bar label."""
+        if self.has_full_backend():
+            return self._backend
+        return "none"
+
+    def status_detail(self) -> str:
+        """Human-readable backend status for banners / notifies."""
+        if self.has_full_backend():
+            return f"Backend: {self._backend}"
+        return (
+            "No audio backend — install mpv or ffmpeg (ffplay). "
+            "Only WAV may work with the limited fallback."
+        )
+
     def set_on_track_end(self, cb: callable) -> None:
         self._on_track_end = cb
 
-    def play(self, path: str, duration: float = 0.0) -> None:
+    def play(self, path: str, duration: float = 0.0) -> bool:
+        """Start playback. Returns False if the backend cannot play *path*."""
+        self._last_error = None
+        if not self.can_play_path(path):
+            self._last_error = self.status_detail()
+            return False
+
         self.stop()
         self._current_path = path
         self._duration = duration
@@ -292,6 +332,7 @@ class MusicEngine:
             self._play_ffmpeg(path)
         else:
             self._play_wave(path)
+        return True
 
     def _play_mpv(self, path: str) -> None:
         try:
@@ -851,7 +892,7 @@ class MusicPlayerWindow(Screen):
     #music-progress { height: 1; }
     #music-now-playing { width: 1fr; padding: 0 1; }
     #music-vol-label { padding: 0 1; }
-    #music-backend { padding: 0 1; width: 8; color: #1e3a5f; }
+    #music-backend { padding: 0 1; width: 18; color: #1e3a5f; }
     #music-search-input { margin: 1; }
     #music-artist-list, #music-album-list, #music-queue-list, #music-search-results { height: 1fr; }
     ListView { height: 1fr; }
@@ -969,6 +1010,8 @@ class MusicPlayerWindow(Screen):
         self._scan_library()
         self._update_controls()
         self._update_progress_timer()
+        if not self._engine.has_full_backend():
+            self._notify_no_backend()
 
     def _scan_library(self) -> None:
         self._library.scan()
@@ -1064,8 +1107,7 @@ class MusicPlayerWindow(Screen):
     def _on_prev(self) -> None:
         track = self._queue.prev()
         if track:
-            self._engine.play(track["path"], track["duration"])
-            self._update_now_playing(track)
+            self._start_playback(track)
             self._refresh_queue()
 
     @on(Button.Pressed, "#btn-stop")
@@ -1256,25 +1298,57 @@ class MusicPlayerWindow(Screen):
 
     # ── Playback ───────────────────────────────────────────────────────────
 
+    def _notify_no_backend(self, track: dict[str, Any] | None = None) -> None:
+        """Surface a clear message when mpv/ffplay/ffmpeg are missing."""
+        detail = self._engine.status_detail()
+        if track:
+            title = track.get("title") or Path(track.get("path", "")).stem
+            msg = f"Cannot play “{title}”: {detail}"
+        else:
+            msg = detail
+        try:
+            self.app.notify(msg, severity="warning", timeout=6)
+        except Exception:
+            pass
+        try:
+            self.query_one("#music-now-playing", Static).update(
+                f"[#ffa502]⚠ {detail}[/]"
+            )
+            art = self.query_one("#music-art-box", Static)
+            art.update(
+                "[#ffa502]No audio backend[/]\n"
+                "[#7f8c8d]Install:[/] [#ecf0f1]mpv[/] or [#ecf0f1]ffmpeg[/]\n"
+                "[#7f8c8d]Tags:[/] [#ecf0f1]pip install mutagen[/]"
+            )
+        except NoMatches:
+            pass
+        self._update_controls()
+
+    def _start_playback(self, track: dict[str, Any]) -> bool:
+        """Play *track* or show the no-backend message. Returns success."""
+        ok = self._engine.play(track["path"], track.get("duration", 0.0))
+        if not ok:
+            self._notify_no_backend(track)
+            return False
+        self._update_now_playing(track)
+        self._update_controls()
+        return True
+
     def _play_current(self) -> None:
         track = self._queue.current
         if track:
-            self._engine.play(track["path"], track["duration"])
-            self._update_now_playing(track)
-            self._update_controls()
+            self._start_playback(track)
 
     def _play_index(self, idx: int) -> None:
         track = self._queue.go_to(idx)
         if track:
-            self._engine.play(track["path"], track["duration"])
-            self._update_now_playing(track)
+            self._start_playback(track)
             self._refresh_queue()
 
     def _next_track(self) -> None:
         track = self._queue.next()
         if track:
-            self._engine.play(track["path"], track["duration"])
-            self._update_now_playing(track)
+            self._start_playback(track)
             self._refresh_queue()
         else:
             self._engine.stop()
@@ -1283,8 +1357,7 @@ class MusicPlayerWindow(Screen):
     def _prev_track(self) -> None:
         track = self._queue.prev()
         if track:
-            self._engine.play(track["path"], track["duration"])
-            self._update_now_playing(track)
+            self._start_playback(track)
             self._refresh_queue()
 
     def _on_track_end(self) -> None:
@@ -1318,7 +1391,11 @@ class MusicPlayerWindow(Screen):
             else:
                 btn.label = "▶"
             back = self.query_one("#music-backend", Static)
-            back.update(f"[#1e3a5f]{self._engine.backend_name()}[/]")
+            label = self._engine.status_label()
+            if self._engine.has_full_backend():
+                back.update(f"[#2ed573]{label}[/]")
+            else:
+                back.update(f"[#ffa502]{label}[/]")
         except NoMatches:
             pass
 
@@ -1353,8 +1430,7 @@ class MusicPlayerWindow(Screen):
     def action_prev_track(self) -> None:
         track = self._queue.prev()
         if track:
-            self._engine.play(track["path"], track["duration"])
-            self._update_now_playing(track)
+            self._start_playback(track)
             self._refresh_queue()
 
     def action_focus_search(self) -> None:
