@@ -1557,10 +1557,69 @@ class LoginScreen(Screen):
                 yield Button("▶  Login",    id="btn-login",  classes="btn-primary")
                 yield Button("＋  New User", id="btn-new")
                 yield Button("◌  Guest",    id="btn-guest")
+                if is_mobile_display():
+                    yield Button("⌨", id="btn-show-kbd", classes="btn-min")
             yield Static("", id="login-err")
+        if is_mobile_display():
+            # Start hidden so Guest/Login stay tappable; open via ⌨
+            yield MobileSoftKeyboard(id="login-soft-kbd")
 
     def on_mount(self) -> None:
         self.query_one("#usr", Input).focus()
+        if is_mobile_display():
+            self.add_class("mobile")
+            try:
+                kbd = self.query_one("#login-soft-kbd", MobileSoftKeyboard)
+                kbd.set_visible(False)
+            except NoMatches:
+                pass
+
+    @on(Button.Pressed, ".sk-key")
+    def _login_soft_key(self, event: Button.Pressed) -> None:
+        """Soft keyboard on login (username field)."""
+        bid = event.button.id or ""
+        event.stop()
+        try:
+            kbd = self.query_one(MobileSoftKeyboard)
+        except NoMatches:
+            kbd = None
+        if bid == "sk-hide":
+            if kbd:
+                kbd.set_visible(False)
+            return
+        if bid == "sk-shift":
+            if kbd:
+                if kbd._symbols:
+                    kbd._symbols = False
+                else:
+                    kbd._shift = not kbd._shift
+                kbd._rebuild()
+            return
+        if bid == "sk-sym":
+            if kbd:
+                kbd._symbols = not kbd._symbols
+                kbd._shift = False
+                kbd._rebuild()
+            return
+        if bid == "sk-back":
+            _inject_soft_key(self, "BACKSPACE")
+            return
+        if bid == "sk-space":
+            _inject_soft_key(self, " ")
+            return
+        if bid == "sk-enter":
+            self._go()
+            return
+        if bid.startswith("sk-ch-"):
+            try:
+                ch = chr(int(bid.split("-")[-1]))
+            except ValueError:
+                return
+            if kbd and kbd._shift and not kbd._symbols:
+                ch = ch.upper()
+                kbd._shift = False
+                kbd._rebuild()
+            _inject_soft_key(self, ch)
 
     @on(Input.Submitted, "#usr")
     def _enter(self) -> None:
@@ -1578,17 +1637,33 @@ class LoginScreen(Screen):
         self.app.push_screen(self._home_screen())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-guest":
+        bid = event.button.id or ""
+        # Soft-keyboard keys are handled by _login_soft_key
+        if bid.startswith("sk-"):
+            return
+        if bid == "btn-show-kbd":
+            try:
+                kbd = self.query_one("#login-soft-kbd", MobileSoftKeyboard)
+                kbd.set_visible(True)
+                self.query_one("#usr", Input).focus()
+            except NoMatches:
+                pass
+            return
+        if bid == "btn-guest":
             self.app.user_profile = load_user_profile("guest")
             self._go_home()
-        else:
-            self._go()
+            return
+        # Login / New User
+        self._go()
 
     def _go(self) -> None:
         uname = self.query_one("#usr", Input).value.strip()
         if not uname:
             self.query_one("#login-err", Static).update("⚠  Username required")
-            self._shake()
+            try:
+                self.call_later(self._shake)
+            except Exception:
+                pass
             return
         self.app.user_profile = load_user_profile(uname)
         self.query_one("#login-err", Static).update("")
@@ -2386,6 +2461,224 @@ class ThemePicker(ModalScreen[str]):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MOBILE CHROME — soft keyboard + Home/Back (Termux has no reliable OSK)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MobileAppNav(Horizontal):
+    """Bottom system nav for app windows: Back · Home · Keyboard toggle."""
+
+    DEFAULT_CSS = """
+    MobileAppNav {
+        dock: bottom;
+        width: 100%;
+        height: 3;
+        background: #060d17;
+        border-top: solid #1e3a5f;
+        align: center middle;
+    }
+    MobileAppNav Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        background: #1a2740;
+        border: round #1e3a5f;
+        color: #ecf0f1;
+        content-align: center middle;
+        text-align: center;
+    }
+    MobileAppNav Button:hover {
+        border: round #00d4ff;
+        color: #00d4ff;
+    }
+    #mnav-home { color: #00d4ff; }
+    #mnav-kbd { color: #2ed573; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Button("◀", id="mnav-back")
+        yield Button("●", id="mnav-home")
+        yield Button("⌨", id="mnav-kbd")
+
+
+class MobileSoftKeyboard(Vertical):
+    """Compact QWERTY for focused Input / TextArea (mobile only)."""
+
+    DEFAULT_CSS = """
+    MobileSoftKeyboard {
+        dock: bottom;
+        width: 100%;
+        height: auto;
+        max-height: 14;
+        background: #0d1b2a;
+        border-top: solid #1e3a5f;
+        padding: 0 0 0 0;
+        layer: overlay;
+    }
+    MobileSoftKeyboard.hidden-kbd {
+        display: none;
+    }
+    .sk-row {
+        width: 100%;
+        height: 3;
+        align: center middle;
+        margin: 0 0 0 0;
+    }
+    .sk-key {
+        width: 1fr;
+        min-width: 2;
+        height: 3;
+        margin: 0 0;
+        padding: 0 0;
+        background: #1a2740;
+        border: round #1e3a5f;
+        color: #ecf0f1;
+        content-align: center middle;
+        text-align: center;
+        text-style: bold;
+    }
+    .sk-key:hover { border: round #00d4ff; color: #00d4ff; }
+    .sk-wide { width: 2fr; }
+    .sk-space { width: 4fr; }
+    .sk-special { color: #00d4ff; }
+    """
+
+    # Rows: letters (lower). Shift flips case; ?123 switches to symbols.
+    _ROWS_ALPHA = [
+        list("qwertyuiop"),
+        list("asdfghjkl"),
+        list("zxcvbnm"),
+    ]
+    _ROWS_NUM = [
+        list("1234567890"),
+        list("@#$%&*-_+="),
+        list("()[]{}.,!?"),
+    ]
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._shift = False
+        self._symbols = False
+        self._built = False
+
+    def on_mount(self) -> None:
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self.remove_children()
+        rows = self._ROWS_NUM if self._symbols else self._ROWS_ALPHA
+        for row in rows:
+            row_w = Horizontal(classes="sk-row")
+            keys = []
+            for ch in row:
+                label = ch.upper() if (self._shift and not self._symbols) else ch
+                keys.append(Button(label, classes="sk-key", id=f"sk-ch-{ord(ch)}"))
+            # pack via mount after compose-like construction
+            self.mount(row_w)
+            for k in keys:
+                row_w.mount(k)
+        # Control row
+        ctrl = Horizontal(classes="sk-row")
+        self.mount(ctrl)
+        shift_lbl = "ABC" if self._symbols else ("⬆" if not self._shift else "⇧")
+        ctrl.mount(Button(shift_lbl, id="sk-shift", classes="sk-key sk-wide sk-special"))
+        ctrl.mount(Button("?123" if not self._symbols else "ABC",
+                          id="sk-sym", classes="sk-key sk-wide sk-special"))
+        ctrl.mount(Button("⌫", id="sk-back", classes="sk-key sk-wide sk-special"))
+        ctrl.mount(Button("␣", id="sk-space", classes="sk-key sk-space"))
+        ctrl.mount(Button("↵", id="sk-enter", classes="sk-key sk-wide sk-special"))
+        ctrl.mount(Button("⌘", id="sk-hide", classes="sk-key sk-special"))
+        self._built = True
+
+    def set_visible(self, visible: bool) -> None:
+        if visible:
+            self.remove_class("hidden-kbd")
+            self.display = True
+        else:
+            self.add_class("hidden-kbd")
+            self.display = False
+
+    def toggle(self) -> bool:
+        show = self.has_class("hidden-kbd") or not self.display
+        self.set_visible(show)
+        return show
+
+
+def _inject_soft_key(screen: Screen, key: str) -> None:
+    """Insert a soft-keyboard key into the focused Input or TextArea."""
+    focus = screen.focused
+    if focus is None:
+        # Fall back to any Input/TextArea on the screen
+        try:
+            focus = screen.query(Input).first()
+        except Exception:
+            try:
+                focus = screen.query(TextArea).first()
+            except Exception:
+                return
+
+    if isinstance(focus, Input):
+        val = focus.value or ""
+        pos = getattr(focus, "cursor_position", len(val))
+        if key == "BACKSPACE":
+            if pos > 0:
+                focus.value = val[: pos - 1] + val[pos:]
+                try:
+                    focus.cursor_position = pos - 1
+                except Exception:
+                    pass
+        elif key == "ENTER":
+            try:
+                focus.action_submit()
+            except Exception:
+                focus.post_message(Input.Submitted(focus, focus.value))
+        else:
+            focus.value = val[:pos] + key + val[pos:]
+            try:
+                focus.cursor_position = pos + len(key)
+            except Exception:
+                pass
+        try:
+            focus.focus()
+        except Exception:
+            pass
+        return
+
+    if isinstance(focus, TextArea):
+        try:
+            if key == "BACKSPACE":
+                focus.action_delete_left()
+            elif key == "ENTER":
+                # Newline
+                if hasattr(focus, "insert"):
+                    focus.insert("\n")
+                else:
+                    r, c = focus.cursor_location
+                    lines = focus.text.split("\n")
+                    line = lines[r] if r < len(lines) else ""
+                    lines[r] = line[:c] + "\n" + line[c:]
+                    # crude join — prefer insert API
+                    focus.text = "\n".join(lines)
+            else:
+                if hasattr(focus, "insert"):
+                    focus.insert(key)
+                else:
+                    r, c = focus.cursor_location
+                    lines = focus.text.splitlines() or [""]
+                    while r >= len(lines):
+                        lines.append("")
+                    line = lines[r]
+                    lines[r] = line[:c] + key + line[c:]
+                    focus.text = "\n".join(lines)
+                    try:
+                        focus.cursor_location = (r, c + len(key))
+                    except Exception:
+                        pass
+            focus.focus()
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BASE WINDOW — every app screen inherits this for free minimize support
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2397,18 +2690,193 @@ class BradWindow(Screen):
     - Smooth fade-out animation on close.
     - Minimize button (—) via @on selector — doesn't interfere with subclass handlers.
     - APP_ID class variable for MinimizeApp message.
+    - Mobile: Home/Back nav + optional soft keyboard (Termux-friendly).
     """
 
     APP_ID: ClassVar[str] = "unknown"
+    # Show bottom ◀ ● ⌨ bar on mobile
+    SHOW_MOBILE_NAV: ClassVar[bool] = True
+    # Auto-show soft keyboard on mobile (text-heavy apps override True)
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = False
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Ensure subclass on_mount still runs mobile chrome (many omit super()).
+        if "on_mount" in cls.__dict__ and cls.__dict__["on_mount"] is not BradWindow.on_mount:
+            user_on_mount = cls.__dict__["on_mount"]
+
+            def on_mount_wrapper(self, *args, **kw):
+                BradWindow._brad_base_mount(self)
+                # Textual may call on_mount(self) or on_mount(self, event)
+                try:
+                    return user_on_mount(self, *args, **kw)
+                except TypeError:
+                    return user_on_mount(self)
+
+            cls.on_mount = on_mount_wrapper  # type: ignore[method-assign]
 
     def on_mount(self) -> None:
-        self.styles.opacity = 0.0
-        self.styles.animate("opacity", 1.0, duration=0.2)
-        # Enable .mobile CSS for this window (calc keypad sizing, etc.)
+        self._brad_base_mount()
+
+    def _brad_base_mount(self) -> None:
+        if getattr(self, "_brad_mounted", False):
+            return
+        self._brad_mounted = True
+        try:
+            self.styles.opacity = 0.0
+            self.styles.animate("opacity", 1.0, duration=0.2)
+        except Exception:
+            pass
         if is_mobile_display():
             self.add_class("mobile")
+            self.call_after_refresh(self._mount_mobile_chrome)
         elif is_tablet_display():
             self.add_class("tablet")
+
+    def _mount_mobile_chrome(self) -> None:
+        if not is_mobile_display():
+            return
+        try:
+            has_kbd = False
+            try:
+                self.query_one(MobileSoftKeyboard)
+                has_kbd = True
+            except NoMatches:
+                pass
+            has_nav = False
+            try:
+                self.query_one(MobileAppNav)
+                has_nav = True
+            except NoMatches:
+                pass
+
+            # Mount keyboard first, then nav — both dock bottom; nav sits at outer edge
+            if self.SHOW_MOBILE_KEYBOARD and not has_kbd:
+                kbd = MobileSoftKeyboard(id="mobile-soft-kbd")
+                self.mount(kbd)
+                kbd.set_visible(True)
+            elif not self.SHOW_MOBILE_KEYBOARD and not has_kbd:
+                # Still available via ⌨ toggle for any app
+                kbd = MobileSoftKeyboard(id="mobile-soft-kbd")
+                self.mount(kbd)
+                kbd.set_visible(False)
+
+            if self.SHOW_MOBILE_NAV and not has_nav:
+                self.mount(MobileAppNav(id="mobile-app-nav"))
+        except Exception:
+            pass
+
+    def _mobile_keyboard(self) -> MobileSoftKeyboard | None:
+        try:
+            return self.query_one(MobileSoftKeyboard)
+        except NoMatches:
+            return None
+
+    def action_mobile_back(self) -> None:
+        """◀ Back — dismiss this app window."""
+        self.dismiss()
+
+    def action_mobile_home(self) -> None:
+        """● Home — pop back to MobileLauncher / DesktopScreen."""
+        app = self.app
+        target = None
+        for s in app.screen_stack:
+            if s.__class__.__name__ in ("MobileLauncher", "DesktopScreen"):
+                target = s
+        # Pop everything above the home screen
+        while app.screen_stack and app.screen_stack[-1] is not target:
+            try:
+                top = app.screen_stack[-1]
+                if hasattr(top, "dismiss_immediate"):
+                    top.dismiss_immediate()
+                else:
+                    app.pop_screen()
+            except Exception:
+                try:
+                    app.pop_screen()
+                except Exception:
+                    break
+                break
+        if target is None:
+            # No launcher underneath (shouldn't happen after login)
+            try:
+                if is_mobile_display():
+                    app.push_screen(MobileLauncher())
+                else:
+                    app.push_screen(DesktopScreen())
+            except Exception:
+                pass
+
+    def action_mobile_toggle_kbd(self) -> None:
+        kbd = self._mobile_keyboard()
+        if kbd is None:
+            try:
+                kbd = MobileSoftKeyboard(id="mobile-soft-kbd")
+                # Mount keyboard above nav if present
+                self.mount(kbd)
+                kbd.set_visible(True)
+            except Exception:
+                return
+        else:
+            kbd.toggle()
+
+    @on(Button.Pressed, "#mnav-back")
+    def _on_mnav_back(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_mobile_back()
+
+    @on(Button.Pressed, "#mnav-home")
+    def _on_mnav_home(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_mobile_home()
+
+    @on(Button.Pressed, "#mnav-kbd")
+    def _on_mnav_kbd(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_mobile_toggle_kbd()
+
+    @on(Button.Pressed, ".sk-key")
+    def _on_soft_key(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        event.stop()
+        kbd = self._mobile_keyboard()
+        if bid == "sk-hide":
+            if kbd:
+                kbd.set_visible(False)
+            return
+        if bid == "sk-shift":
+            if kbd:
+                if kbd._symbols:
+                    kbd._symbols = False
+                else:
+                    kbd._shift = not kbd._shift
+                kbd._rebuild()
+            return
+        if bid == "sk-sym":
+            if kbd:
+                kbd._symbols = not kbd._symbols
+                kbd._shift = False
+                kbd._rebuild()
+            return
+        if bid == "sk-back":
+            _inject_soft_key(self, "BACKSPACE")
+            return
+        if bid == "sk-space":
+            _inject_soft_key(self, " ")
+            return
+        if bid == "sk-enter":
+            _inject_soft_key(self, "ENTER")
+            return
+        if bid.startswith("sk-ch-"):
+            try:
+                ch = chr(int(bid.split("-")[-1]))
+            except ValueError:
+                return
+            if kbd and kbd._shift and not kbd._symbols:
+                ch = ch.upper()
+                kbd._shift = False
+                kbd._rebuild()
+            _inject_soft_key(self, ch)
 
     def dismiss(self, result=None) -> None:
         self.styles.animate("opacity", 0.0, duration=0.15)
@@ -2435,6 +2903,7 @@ from brados_brash import BrashShell
 class TerminalWindow(BradWindow):
     """Full brash-powered terminal with autosuggestions, history, and pipes."""
     APP_ID: ClassVar[str] = "terminal"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
 
     def compose(self) -> ComposeResult:
@@ -2522,6 +2991,7 @@ class TerminalWindow(BradWindow):
 
 class BrowserWindow(BradWindow):
     APP_ID: ClassVar[str] = "browser"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [
         Binding("escape",   "dismiss",  "Close"),
         Binding("ctrl+t",   "new_tab",  "New Tab"),
@@ -3036,6 +3506,7 @@ class _GitCommitModal(ModalScreen[None]):
 class BradTextEditor(BradWindow):
     """Code editor with Git integration and Jedi autocompletion."""
     APP_ID: ClassVar[str] = "editor"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [
         Binding("ctrl+s",   "save",           "Save"),
         Binding("ctrl+f",   "find_replace",   "Find"),
@@ -3529,6 +4000,7 @@ EditorWindow = BradTextEditor  # backward compat alias
 
 class MailWindow(BradWindow):
     APP_ID: ClassVar[str] = "mail"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
     _folder: str = "inbox"
     _sel:    int = -1
@@ -4203,6 +4675,7 @@ class KernelWindow(BradWindow):
 
 class NotesWindow(BradWindow):
     APP_ID: ClassVar[str] = "notes"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [
         Binding("ctrl+s", "save_note", "Save"),
         Binding("ctrl+n", "new_note",  "New"),
@@ -5483,6 +5956,7 @@ class TextToolsWindow(BradWindow):
     and text_case_convert (pure functions, unit tested separately)."""
 
     APP_ID: ClassVar[str] = "texttools"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
 
     def compose(self) -> ComposeResult:
@@ -5841,6 +6315,7 @@ class SnakeWindow(BradWindow):
 
 class VaultWindow(BradWindow):
     APP_ID: ClassVar[str] = "vault"
+    SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close")]
 
     _entries: list[dict] = []

@@ -56,6 +56,13 @@ Avoid these in desktop app code (see existing shell lint tests):
 
 When writing background work, follow patterns already used in Monitor / tray stats (`@work` + await, or timers).
 
+### Mobile (Termux)
+
+- `BradWindow` auto-mounts **◀ Back · ● Home · ⌨ Keyboard** on narrow displays.
+- Set `SHOW_MOBILE_KEYBOARD = True` on text-heavy apps (Terminal, Editor, Notes, …).
+- Games should use on-screen D-pad / tiles — do not rely on the OS soft keyboard.
+- Login: soft keyboard starts **hidden**; user opens it with **⌨** so Guest stays tappable.
+
 ### Security / VFS
 
 - Prefer VFS APIs with `caller_pid` when doing privileged I/O.

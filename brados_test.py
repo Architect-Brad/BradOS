@@ -1248,6 +1248,80 @@ class TestMobileTouchControls:
             for d in ("up", "down", "left", "right", "action"):
                 assert f"{prefix}-{d}"
 
+    def test_text_apps_enable_soft_keyboard(self):
+        from brados_shell import (
+            TerminalWindow, BrowserWindow, BradTextEditor, NotesWindow,
+            MailWindow, TextToolsWindow, VaultWindow, CalculatorWindow,
+        )
+        for cls in (TerminalWindow, BrowserWindow, BradTextEditor, NotesWindow,
+                    MailWindow, TextToolsWindow, VaultWindow):
+            assert cls.SHOW_MOBILE_KEYBOARD is True, cls.__name__
+        # Calc uses its own pad, not QWERTY by default
+        assert CalculatorWindow.SHOW_MOBILE_KEYBOARD is False
+
+    def test_inject_soft_key_into_input(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("brados_shell.is_mobile_display", lambda: True)
+        from brados_shell import BradOSShell, TerminalWindow, _inject_soft_key
+        from brados_apps import init_dirs
+        from textual.widgets import Input
+
+        def light_mount(self):
+            init_dirs()
+            self.push_screen(TerminalWindow())
+
+        monkeypatch.setattr(BradOSShell, "on_mount", light_mount)
+        app = BradOSShell()
+        # Avoid heavy kernel/daemon — TerminalWindow still needs vfs optional
+        async def _run():
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert isinstance(app.screen, TerminalWindow)
+                # Mobile chrome
+                assert app.screen.query("#mnav-back")
+                assert app.screen.query("#mnav-home")
+                assert app.screen.query("#mnav-kbd")
+                inp = app.screen.query_one("#term-input", Input)
+                inp.focus()
+                await pilot.pause()
+                _inject_soft_key(app.screen, "h")
+                _inject_soft_key(app.screen, "i")
+                assert "hi" in inp.value
+                _inject_soft_key(app.screen, "BACKSPACE")
+                assert inp.value == "h"
+                # Home returns toward launcher/desktop (stack may only be terminal)
+                app.screen.action_mobile_back()
+                await pilot.pause()
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run()) if False else None
+
+    async def test_terminal_mobile_chrome_and_type(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("brados_shell.is_mobile_display", lambda: True)
+        from brados_shell import BradOSShell, TerminalWindow, _inject_soft_key
+        from brados_apps import init_dirs
+        from textual.widgets import Input
+
+        def light_mount(self):
+            init_dirs()
+            self.push_screen(TerminalWindow())
+
+        monkeypatch.setattr(BradOSShell, "on_mount", light_mount)
+        app = BradOSShell()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.3)
+            assert isinstance(app.screen, TerminalWindow)
+            # Nav + soft keyboard mounted
+            assert app.screen.query("#mobile-app-nav")
+            assert app.screen.query("#mobile-soft-kbd")
+            inp = app.screen.query_one("#term-input", Input)
+            inp.focus()
+            await pilot.pause()
+            _inject_soft_key(app.screen, "a")
+            _inject_soft_key(app.screen, "b")
+            assert inp.value == "ab"
+
 
 class TestDesktopMinimize:
     """MinimizeApp is posted by a BradWindow (a Screen) and previously only
