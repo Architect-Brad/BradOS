@@ -1190,6 +1190,46 @@ class TestLoginMobile:
             await pilot.pause()
             assert any(isinstance(s, MobileLauncher) for s in app.screen_stack)
 
+    async def test_mobile_launcher_grid_and_nav(self, monkeypatch, tmp_path):
+        """Phase-1 One UI lite: icon tiles + bottom Back/Home, not full-width strips."""
+        monkeypatch.chdir(tmp_path)
+        from brados_shell import BradOSShell, MobileLauncher, APPS
+        from brados_apps import init_dirs
+
+        def light_mount(self):
+            init_dirs()
+            self.push_screen(MobileLauncher())
+
+        monkeypatch.setattr(BradOSShell, "on_mount", light_mount)
+        app = BradOSShell()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, MobileLauncher)
+            # Nav chrome
+            assert app.screen.query_one("#ml-nav-back")
+            assert app.screen.query_one("#ml-nav-home")
+            # Grid tiles for each app (not .ml-app-btn strips)
+            tiles = list(app.screen.query(".ml-tile"))
+            assert len(tiles) == len(APPS)
+            assert app.screen.query("#ml-grid")
+            # Home clears search / keeps tiles visible
+            search = app.screen.query_one("#ml-search")
+            search.value = "zzz-no-match"
+            await pilot.pause()
+            app.screen.action_nav_home()
+            await pilot.pause()
+            assert search.value == ""
+            visible = [t for t in app.screen.query(".ml-tile") if t.display]
+            assert len(visible) == len(APPS)
+
+    def test_tile_label_format(self):
+        from brados_shell import MobileLauncher
+        label = MobileLauncher._tile_label("⌨", "Terminal")
+        assert "⌨" in label and "Terminal" in label
+        assert "\n" in label
+        long = MobileLauncher._tile_label("★", "Very Long Application Name")
+        assert "…" in long or len(long.split("\n")[-1]) <= 10
+
 
 class TestDesktopMinimize:
     """MinimizeApp is posted by a BradWindow (a Screen) and previously only

@@ -273,7 +273,7 @@ AppIconWidget.running {
     display: none;
 }
 
-/* ── Mobile Launcher ───────────────────── */
+/* ── Mobile Launcher (One UI–style icon grid) ─ */
 
 MobileLauncher {
     align: center top;
@@ -285,37 +285,92 @@ MobileLauncher {
     height: 100%;
 }
 
-#ml-spacer-top { height: 1; }
-#ml-spacer-bottom { height: 1; }
+#ml-header {
+    width: 100%;
+    height: 1;
+    color: #7f8c8d;
+    text-align: center;
+    margin: 0 0 0 0;
+}
 
 #ml-search {
     width: 100%;
     height: 3;
-    margin: 0 0 1 0;
+    margin: 0 1 1 1;
     border: round #00d4ff;
     background: #1a2740;
     color: #ecf0f1;
 }
 
-#ml-list {
+#ml-scroll {
     width: 100%;
     height: 1fr;
+    padding: 0 1;
 }
 
-.ml-app-btn {
+/* 3-column app grid — rounded tiles, not full-width strips */
+#ml-grid {
+    layout: grid;
+    grid-size: 3;
+    grid-gutter: 1 1;
+    grid-rows: 7;
     width: 100%;
-    height: 5;
-    margin: 0 0 1 0;
+    height: auto;
+    padding: 0 0 1 0;
+}
+
+.ml-tile {
+    width: 100%;
+    height: 7;
+    min-width: 8;
     background: #1a2740;
     border: round #1e3a5f;
     color: #ecf0f1;
-    content-align: left middle;
-    padding: 0 2;
+    content-align: center middle;
+    text-align: center;
+    padding: 0 0;
 }
 
-.ml-app-btn:hover {
+.ml-tile:hover {
     background: #243450;
     border: round #00d4ff;
+    color: #00d4ff;
+}
+
+.ml-tile:focus {
+    background: #243450;
+    border: round #00d4ff;
+}
+
+/* Bottom system-style nav (launcher only) */
+#ml-nav {
+    width: 100%;
+    height: 3;
+    align: center middle;
+    background: #060d17;
+    border-top: solid #1e3a5f;
+    dock: bottom;
+}
+
+.ml-nav-btn {
+    width: 1fr;
+    height: 3;
+    min-width: 6;
+    margin: 0 2;
+    background: #1a2740;
+    border: round #1e3a5f;
+    color: #ecf0f1;
+    content-align: center middle;
+    text-align: center;
+}
+
+.ml-nav-btn:hover {
+    border: round #00d4ff;
+    color: #00d4ff;
+}
+
+#ml-nav-home {
+    color: #00d4ff;
 }
 
 .mobile #tray-sec {
@@ -1931,29 +1986,44 @@ class DesktopScreen(Screen):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class MobileLauncher(Screen):
-    """Simplified full-screen app launcher for phones/small terminals.
+    """Phone/small-terminal home screen (One UI–style icon grid).
 
     Replaces DesktopScreen when is_mobile_display() is True.
-    Big touch targets, search bar, swipe-up to dismiss.
+    3-column rounded tiles + search + bottom Back (◀) / Home (●) nav.
     """
 
     BINDINGS: ClassVar = [
-        Binding("escape", "quit", "Quit"),
+        Binding("escape", "nav_back", "Back"),
         Binding("slash", "focus_search", "Search"),
+        Binding("h", "nav_home", "Home", show=False),
     ]
 
+    # Columns for the app grid (terminal "One UI" density)
+    GRID_COLS: ClassVar[int] = 3
+
     def compose(self) -> ComposeResult:
-        yield Static("", id="ml-spacer-top")
         with Vertical(id="ml-container"):
+            yield Static("BradOS  ·  Apps", id="ml-header")
             yield Input(placeholder="🔍 Search apps…", id="ml-search")
-            with ScrollableContainer(id="ml-list"):
-                for app in APPS:
-                    yield Button(
-                        f"{app['icon']}  {app['name']}",
-                        id=f"ml-{app['id']}",
-                        classes="ml-app-btn",
-                    )
-        yield Static("", id="ml-spacer-bottom")
+            with ScrollableContainer(id="ml-scroll"):
+                with Grid(id="ml-grid"):
+                    for app in APPS:
+                        label = self._tile_label(app["icon"], app["name"])
+                        yield Button(
+                            label,
+                            id=f"ml-{app['id']}",
+                            classes="ml-tile",
+                            tooltip=app.get("desc", app["name"]),
+                        )
+            with Horizontal(id="ml-nav"):
+                yield Button("◀", id="ml-nav-back", classes="ml-nav-btn")
+                yield Button("●", id="ml-nav-home", classes="ml-nav-btn")
+
+    @staticmethod
+    def _tile_label(icon: str, name: str) -> str:
+        """Icon on first line, short name under (fits narrow tiles)."""
+        short = name if len(name) <= 10 else name[:9] + "…"
+        return f"{icon}\n{short}"
 
     def on_mount(self) -> None:
         self.query_one("#ml-search", Input).focus()
@@ -1961,15 +2031,23 @@ class MobileLauncher(Screen):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "ml-search":
             return
-        q = event.value.lower()
-        for btn in self.query(".ml-app-btn"):
-            app_id = btn.id[3:]
+        q = event.value.lower().strip()
+        for btn in self.query(".ml-tile"):
+            bid = btn.id or ""
+            if not bid.startswith("ml-") or bid.startswith("ml-nav"):
+                continue
+            app_id = bid[3:]
             meta = next((a for a in APPS if a["id"] == app_id), None)
             if meta is None:
                 continue
-            match = (q in meta["name"].lower() or q in meta["desc"].lower()
-                     or q in meta["cat"].lower())
-            btn.display = match or not q
+            match = (
+                not q
+                or q in meta["name"].lower()
+                or q in meta["desc"].lower()
+                or q in meta["cat"].lower()
+                or q in meta["id"].lower()
+            )
+            btn.display = match
 
     def _app_screen(self, app_id: str) -> type[Screen] | None:
         """Resolve app_id to a screen class (lazy, using module globals)."""
@@ -1994,14 +2072,40 @@ class MobileLauncher(Screen):
         return g.get(cls_name) if cls_name else None
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id and event.button.id.startswith("ml-"):
-            app_id = event.button.id[3:]
+        bid = event.button.id or ""
+        if bid == "ml-nav-back":
+            self.action_nav_back()
+            return
+        if bid == "ml-nav-home":
+            self.action_nav_home()
+            return
+        if bid.startswith("ml-"):
+            app_id = bid[3:]
             cls = self._app_screen(app_id)
             if cls:
                 self.app.push_screen(cls())
 
+    def action_nav_back(self) -> None:
+        """◀ Back on the launcher exits BradOS (system back)."""
+        self.app.exit()
+
+    def action_nav_home(self) -> None:
+        """● Home: clear search, show all tiles, focus search."""
+        try:
+            search = self.query_one("#ml-search", Input)
+            search.value = ""
+            for btn in self.query(".ml-tile"):
+                btn.display = True
+            search.focus()
+            try:
+                self.query_one("#ml-scroll", ScrollableContainer).scroll_home(animate=False)
+            except NoMatches:
+                pass
+        except NoMatches:
+            pass
+
     def action_quit(self) -> None:
-        self.app.quit()
+        self.app.exit()
 
     def action_focus_search(self) -> None:
         self.query_one("#ml-search", Input).focus()
