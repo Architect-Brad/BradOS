@@ -152,6 +152,74 @@ def safe_eval(expr: str) -> float | int:
     return _eval(tree.body)
 
 
+# ── Text tools (word/char counter + case conversion) ───────────────────────────
+
+def text_stats(text: str) -> dict:
+    """Compute word/char/line/sentence stats for a block of text.
+
+    Kept as a pure function (no I/O, no Textual) so it's trivially unit
+    tested and reusable from both the classic-mode CLI and the GUI app.
+    """
+    words = text.split()
+    chars = len(text)
+    chars_no_spaces = len(text.replace(" ", "").replace("\t", "").replace("\n", ""))
+    lines = text.splitlines()
+    sentence_enders = re.findall(r"[.!?]+", text)
+    sentences = len(sentence_enders) if sentence_enders else (1 if words else 0)
+    # Average adult silent reading speed ~200 wpm.
+    reading_time_min = round(len(words) / 200, 2) if words else 0.0
+    return {
+        "words": len(words),
+        "chars": chars,
+        "chars_no_spaces": chars_no_spaces,
+        "lines": len(lines),
+        "sentences": sentences,
+        "reading_time_min": reading_time_min,
+    }
+
+
+def text_case_convert(text: str, mode: str) -> str:
+    """Convert text case. mode: 'upper' | 'lower' | 'title' | 'sentence' | 'toggle'."""
+    if mode == "upper":
+        return text.upper()
+    if mode == "lower":
+        return text.lower()
+    if mode == "title":
+        return text.title()
+    if mode == "sentence":
+        stripped = text.strip()
+        if not stripped:
+            return text
+        return stripped[0].upper() + stripped[1:].lower()
+    if mode == "toggle":
+        return text.swapcase()
+    raise ValueError(f"Unknown case mode: {mode}")
+
+
+def text_tools_task():
+    """Classic-mode (non-GUI) text tools: paste text, get stats + case tools."""
+    print_header("Text Tools", icon="app_notes")
+    print_status("Paste/type text, then an empty line to finish.", "info")
+    lines_in: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line == "" and lines_in:
+            break
+        lines_in.append(line)
+    text = "\n".join(lines_in)
+    stats = text_stats(text)
+    print_status(
+        f"Words: {stats['words']}  Chars: {stats['chars']} "
+        f"(no spaces: {stats['chars_no_spaces']})  Lines: {stats['lines']}  "
+        f"Sentences: {stats['sentences']}  ~Reading time: {stats['reading_time_min']} min",
+        "info",
+    )
+    return stats
+
+
 # ── Classic-mode Calculator ───────────────────────────────────────────────────
 
 def simple_calculator():
