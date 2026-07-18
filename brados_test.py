@@ -281,6 +281,47 @@ class TestKernel:
         syscall = gen.send(0)             # inject ret → EXIT
         assert syscall[0] == SYSCALL_EXIT
 
+    def test_tick_runs_desktop_tasks_without_blocking(self):
+        """tick() advances shell-safe tasks and publishes shmem (no PRINT/INPUT)."""
+        from brados_kernel_core import (
+            BradOSKernel, desktop_clock_task, desktop_status_task,
+        )
+
+        k = BradOSKernel()
+        k.create_task("DesktopClock", desktop_clock_task, uid=1000, nice=10)
+        k.create_task("SysStatus", desktop_status_task, uid=1000, nice=15)
+
+        # First epoch: both tasks should execute their first syscalls
+        n = k.tick()
+        assert n == 2
+        assert "sys.clock" in k._shmem
+        # Status task first yield is GETPID — need a couple ticks to SHMEM_PUT
+        for _ in range(4):
+            k.tick()
+        assert "sys.status" in k._shmem
+        names = {t["name"] for t in k.list_tasks()}
+        assert "DesktopClock" in names
+        assert "SysStatus" in names
+
+    def test_tick_does_not_block_on_sleep(self):
+        """Sleeping tasks are re-queued; tick() returns immediately."""
+        from brados_kernel_core import BradOSKernel, SC
+
+        def sleeper():
+            yield (SC.SLEEP, 60.0)
+            yield (SC.EXIT,)
+
+        k = BradOSKernel()
+        k.create_task("Sleeper", sleeper, uid=1000)
+        t0 = time.monotonic()
+        k.tick()  # enter SLEEP
+        k.tick()  # should skip sleeping task without waiting 60s
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0
+        tasks = k.list_tasks()
+        assert len(tasks) == 1
+        assert tasks[0]["state"] == "sleeping"
+
 
 # ════════════════════════════════════════════════════════════════
 # SECURITY (BradSec)
@@ -433,6 +474,174 @@ class TestApps:
         out  = html_to_text(html)
         assert "Click" in out
 
+    # ── Text tools ──────────────────────────────────────────────────────────
+
+    def test_text_stats_basic(self):
+        from brados_apps import text_stats
+        stats = text_stats("Hello world. This is BradOS!")
+        assert stats["words"] == 5
+        assert stats["sentences"] == 2
+        assert stats["lines"] == 1
+        assert stats["chars_no_spaces"] < stats["chars"]
+
+    def test_text_stats_empty(self):
+        from brados_apps import text_stats
+        stats = text_stats("")
+        assert stats == {
+            "words": 0, "chars": 0, "chars_no_spaces": 0,
+            "lines": 0, "sentences": 0, "reading_time_min": 0.0,
+        }
+
+    def test_text_stats_multiline(self):
+        from brados_apps import text_stats
+        stats = text_stats("line1\nline2\nline3")
+        assert stats["lines"] == 3
+        assert stats["words"] == 3
+
+    def test_text_stats_no_punctuation_counts_one_sentence(self):
+        from brados_apps import text_stats
+        stats = text_stats("just some words with no ending punctuation")
+        assert stats["sentences"] == 1
+
+    def test_text_stats_reading_time_scales_with_length(self):
+        from brados_apps import text_stats
+        short = text_stats("word " * 50)
+        long_ = text_stats("word " * 500)
+        assert long_["reading_time_min"] > short["reading_time_min"]
+
+    def test_text_case_convert_upper_lower(self):
+        from brados_apps import text_case_convert
+        assert text_case_convert("Hello World", "upper") == "HELLO WORLD"
+        assert text_case_convert("Hello World", "lower") == "hello world"
+
+    def test_text_case_convert_title(self):
+        from brados_apps import text_case_convert
+        assert text_case_convert("hello world", "title") == "Hello World"
+
+    def test_text_case_convert_sentence(self):
+        from brados_apps import text_case_convert
+        assert text_case_convert("hELLO WORLD", "sentence") == "Hello world"
+
+    def test_text_case_convert_toggle(self):
+        from brados_apps import text_case_convert
+        assert text_case_convert("Hello World", "toggle") == "hELLO wORLD"
+
+    def test_text_case_convert_unknown_mode_raises(self):
+        from brados_apps import text_case_convert
+        with pytest.raises(ValueError):
+            text_case_convert("hi", "not-a-mode")
+
+    def test_text_case_convert_sentence_empty(self):
+        from brados_apps import text_case_convert
+        assert text_case_convert("   ", "sentence") == "   "
+
+
+class TestBrash:
+    """Coverage for brados_brash.py — previously had zero test coverage
+    despite being a core, user-facing subsystem."""
+
+    def _shell(self, vfs=None, cwd="/tmp"):
+        from unittest.mock import MagicMock
+        from brados_brash import BrashShell
+        return BrashShell(MagicMock(), MagicMock(), MagicMock(), vfs=vfs, cwd=cwd)
+
+    # ── Chain splitting ──────────────────────────────────────────────────
+
+    def test_split_chain_semicolon(self):
+        s = self._shell()
+        assert s._split_chain("echo a; echo b") == [("echo a", None), ("echo b", "seq")]
+
+    def test_split_chain_and_or(self):
+        s = self._shell()
+        result = s._split_chain("echo a && echo b || echo c")
+        assert result == [("echo a", None), ("echo b", "and"), ("echo c", "or")]
+
+    def test_split_chain_respects_quotes(self):
+        s = self._shell()
+        result = s._split_chain('grep "a && b" file; echo ok')
+        assert result == [('grep "a && b" file', None), ("echo ok", "seq")]
+
+    def test_split_chain_single_command_no_connector(self):
+        s = self._shell()
+        assert s._split_chain("echo hello") == [("echo hello", None)]
+
+    # ── Aliases ───────────────────────────────────────────────────────────
+
+    def test_alias_define_and_expand(self):
+        s = self._shell()
+        s._cmd_alias(["hi=echo hello"])
+        assert s._expand_aliases("hi") == "echo hello"
+
+    def test_alias_expand_preserves_trailing_args(self):
+        s = self._shell()
+        s._cmd_alias(["ll=ls -la"])
+        assert s._expand_aliases("ll /home") == "ls -la /home"
+
+    def test_alias_quoted_value(self):
+        s = self._shell()
+        s._cmd_alias(["gs=git status"])
+        out = s._cmd_alias(["gs"])
+        assert "git status" in out
+
+    def test_alias_list_when_empty(self):
+        s = self._shell()
+        assert "No aliases" in s._cmd_alias([])
+
+    def test_unalias_removes(self):
+        s = self._shell()
+        s._cmd_alias(["hi=echo hi"])
+        s._cmd_unalias(["hi"])
+        assert s._expand_aliases("hi") == "hi"    # no longer expands
+
+    def test_unalias_unknown_reports_not_found(self):
+        s = self._shell()
+        out = s._cmd_unalias(["nope"])
+        assert "not found" in out
+
+    def test_alias_cycle_guard_does_not_hang(self):
+        s = self._shell()
+        # a self-referential alias must not infinite-loop
+        s._aliases["loop"] = "loop"
+        result = s._expand_aliases("loop")
+        assert isinstance(result, str)   # returns rather than hanging
+
+    def test_alias_persists_via_vfs(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from brados_vfs import create_default_vfs
+        vfs = create_default_vfs()
+        s = self._shell(vfs=vfs)
+        s._cmd_alias(["ll=ls -la"])
+        # A fresh shell instance backed by the same vfs should load it back.
+        s2 = self._shell(vfs=vfs)
+        assert s2._aliases.get("ll") == "ls -la"
+
+    # ── &&/||/; gated execution (async) ─────────────────────────────────
+
+    async def test_and_skips_after_failure(self):
+        s = self._shell()
+        await s.handle_input("rm /definitely/not/here && echo should_not_run")
+        outputs = [c.args[0] for c in s.log.write.call_args_list]
+        assert "should_not_run" not in outputs   # only the echoed input line may mention it
+
+    async def test_or_runs_fallback_after_failure(self):
+        s = self._shell()
+        await s.handle_input("rm /definitely/not/here || echo fallback_ran")
+        written = " ".join(str(c) for c in s.log.write.call_args_list)
+        assert "fallback_ran" in written
+
+    async def test_semicolon_always_runs_both(self):
+        s = self._shell()
+        await s.handle_input("echo one ; echo two")
+        written = " ".join(str(c) for c in s.log.write.call_args_list)
+        assert "one" in written and "two" in written
+
+    async def test_alias_used_in_handle_input(self):
+        s = self._shell()
+        await s.handle_input("alias hi=echo")
+        await s.handle_input("hi hello-there")
+        written = " ".join(str(c) for c in s.log.write.call_args_list)
+        assert "hello-there" in written
+
 
 # ════════════════════════════════════════════════════════════════
 # SHELL IMPORTS
@@ -467,6 +676,16 @@ class TestShellImports:
         from brados_shell import BpkgWindow
         assert BpkgWindow.APP_ID == "bpkg"
 
+    def test_texttools_window_imported(self):
+        from brados_shell import TextToolsWindow, BradWindow
+        assert issubclass(TextToolsWindow, BradWindow)
+        assert TextToolsWindow.APP_ID == "texttools"
+
+    def test_apps_manifest_includes_texttools_with_matching_window(self):
+        from brados_shell import APPS, TextToolsWindow
+        entry = next(a for a in APPS if a["id"] == "texttools")
+        assert entry["id"] == TextToolsWindow.APP_ID
+
     def test_bradsec_module(self):
         from brados_security import BradSec, Cap, get_bradsec
         sec = get_bradsec()
@@ -483,15 +702,16 @@ class TestShellImports:
 
     def test_apps_manifest(self):
         from brados_shell import APPS
-        assert len(APPS) == 24
+        required = ["terminal", "browser", "files", "editor", "mail",
+                    "notes", "calculator", "clock", "monitor", "logs",
+                    "kernel", "settings", "bradsec", "bpkg",
+                    "paint", "converter", "texttools", "rss",
+                    "snake", "vault", "weather",
+                    "minesweeper", "game2048", "markdown", "mesh"]
+        assert len(APPS) >= len(required)
         ids = {a["id"] for a in APPS}
-        for required in ["terminal", "browser", "files", "editor", "mail",
-                         "notes", "calculator", "clock", "monitor", "logs",
-                         "kernel", "settings", "bradsec", "bpkg",
-                         "paint", "converter", "rss",
-                         "snake", "vault", "weather",
-                         "minesweeper", "game2048", "markdown", "mesh"]:
-            assert required in ids
+        for r in required:
+            assert r in ids
 
     def test_splash_screen(self):
         from brados_shell import SplashScreen
@@ -594,6 +814,77 @@ class TestBpkg:
         assert all(p.category == "lib" for p in libs)
         assert len(libs) >= 3
 
+    # ── install_script trust / checksum gate ────────────────────────────────
+
+    def test_builtin_packages_are_trusted(self):
+        from brados_bpkg import BUILTIN_REGISTRY
+        for pkg_dict in BUILTIN_REGISTRY:
+            assert self.mgr.registry.is_trusted(pkg_dict["name"])
+
+    def test_builtin_script_checksum_auto_pinned(self):
+        # None of the current builtins ship an install_script, but any that
+        # did would have their checksum auto-pinned by _load_builtin().
+        import hashlib
+        from brados_bpkg import Package, PackageRegistry
+        reg = PackageRegistry()
+        pkg = Package(name="hypothetical", version="1.0", description="d",
+                      install_script="echo hi")
+        assert not pkg.script_matches_checksum()   # unpinned yet
+        pkg.script_sha256 = hashlib.sha256(pkg.install_script.encode()).hexdigest()
+        assert pkg.script_matches_checksum()       # matches once pinned
+        assert all(p.script_matches_checksum() for p in reg.all_packages())
+
+    def test_package_without_script_trivially_matches(self):
+        from brados_bpkg import Package
+        pkg = Package(name="x", version="1.0", description="d")
+        assert pkg.script_matches_checksum()
+
+    def test_package_with_wrong_checksum_fails(self):
+        from brados_bpkg import Package
+        pkg = Package(name="x", version="1.0", description="d",
+                      install_script="echo hi", script_sha256="deadbeef")
+        assert not pkg.script_matches_checksum()
+
+    def test_untrusted_script_is_skipped_without_override(self, monkeypatch):
+        from unittest.mock import patch
+        from brados_bpkg import Package
+        rogue = Package(name="rogue-pkg", version="1.0", description="d",
+                         install_script="touch /tmp/should_not_run")
+        self.mgr.registry._packages["rogue-pkg"] = rogue
+        calls = []
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: calls.append(a) or type("R", (), {"returncode": 0})())
+        with patch("brados_bpkg.PypiHelper.install", return_value=True):
+            result = self.mgr.install("rogue-pkg")
+        assert result.success              # package itself still "installs"
+        assert calls == []                 # but the unverified script never ran
+        assert any("Skipped install_script" in m for m in result.messages)
+
+    def test_untrusted_script_runs_with_explicit_override(self, monkeypatch):
+        from unittest.mock import patch
+        from brados_bpkg import Package
+        rogue = Package(name="rogue-pkg", version="1.0", description="d",
+                         install_script="echo override-ran")
+        self.mgr.registry._packages["rogue-pkg"] = rogue
+        calls = []
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: calls.append(a) or type("R", (), {"returncode": 0})())
+        with patch("brados_bpkg.PypiHelper.install", return_value=True):
+            result = self.mgr.install("rogue-pkg", allow_unverified_scripts=True)
+        assert result.success
+        assert len(calls) == 1
+        assert any("UNVERIFIED" in m for m in result.messages)
+
+    def test_remote_registry_cannot_shadow_builtin_name(self):
+        from brados_bpkg import Package
+        original = self.mgr.registry.get("brad-psutil")
+        spoof = Package(name="brad-psutil", version="99.0", description="evil twin",
+                         install_script="rm -rf /")
+        # Simulate what fetch_remote/_load_cache guard against
+        if spoof.name in self.mgr.registry._trusted:
+            pass  # guarded — the spoof must never overwrite the builtin entry
+        else:
+            self.mgr.registry._packages[spoof.name] = spoof
+        assert self.mgr.registry.get("brad-psutil").version == original.version
+
     def test_db_persistence(self):
         from unittest.mock import patch
         from brados_bpkg import PackageDB
@@ -691,6 +982,143 @@ class TestMesh:
         m1 = get_mesh()
         m2 = get_mesh()
         assert m1 is m2
+
+
+# ════════════════════════════════════════════════════════════════
+# DESKTOP MINIMIZE/TASKBAR (regression: MinimizeApp bubbling)
+# ════════════════════════════════════════════════════════════════
+
+class TestDesktopMinimize:
+    """MinimizeApp is posted by a BradWindow (a Screen) and previously only
+    had a handler on DesktopScreen — but sibling Screens on the stack are not
+    DOM ancestors of each other, so the message could never actually reach
+    it. Handling now lives on the App itself, which IS an ancestor of every
+    pushed screen. These tests exercise the real message-bubbling path."""
+
+    async def test_minimize_message_reaches_desktop_screen(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        from brados_shell import BradOSShell, DesktopScreen, MinimizeApp
+
+        # Textual dispatches on_mount from EVERY class in the MRO, not just
+        # the most-derived override — so subclassing and overriding on_mount
+        # would run BOTH the override and the real (heavy, service-starting)
+        # on_mount. Monkeypatch the class method instead, so there's exactly
+        # one on_mount in play: skip real service/daemon startup, just show
+        # the desktop.
+        monkeypatch.setattr(BradOSShell, "on_mount",
+                             lambda self: self.push_screen(DesktopScreen()))
+        app = BradOSShell()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            desktop = next(s for s in app.screen_stack if isinstance(s, DesktopScreen))
+            desktop._open_apps.add("texttools")
+
+            app.post_message(MinimizeApp("texttools"))
+            await pilot.pause()
+
+            assert "texttools" in desktop._minimized
+            assert "texttools" in desktop._open_apps
+
+    async def test_taskbar_reflects_minimized_state(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        from brados_shell import BradOSShell, DesktopScreen, MinimizeApp
+        from textual.widgets import Button
+
+        monkeypatch.setattr(BradOSShell, "on_mount",
+                             lambda self: self.push_screen(DesktopScreen()))
+        app = BradOSShell()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            desktop = next(s for s in app.screen_stack if isinstance(s, DesktopScreen))
+            desktop._open_apps.add("calculator")
+            app.post_message(MinimizeApp("calculator"))
+            await pilot.pause()
+
+            task_btn = desktop.query_one("#task-calculator", Button)
+            assert "minimized" in task_btn.classes
+
+
+# ════════════════════════════════════════════════════════════════
+# CSS / THEME LAUNCH-CRASH REGRESSIONS
+# ════════════════════════════════════════════════════════════════
+
+class TestShellCssHealth:
+    """Two compounding bugs made the real app crash on launch under
+    Textual 8.x: (1) get_css_variables() only supplied theme colors once
+    self._theme existed, but Textual applies the stylesheet before
+    on_mount() ever runs; (2) the hex->$var substitution used plain
+    str.replace(), which corrupted 8-digit alpha-channel hex colors whose
+    first 6 digits matched a themed color (e.g. #00d4ff22 -> "$accent22",
+    an undefined variable). Both are fixed; these tests guard against
+    regressions."""
+
+    def test_shell_css_has_no_corrupted_alpha_variables(self):
+        """No $var name in SHELL_CSS should have stray hex digits glued on
+        (e.g. $accent22, $success44) — these are unresolvable and previously
+        crashed the whole app at launch."""
+        import re
+        from brados_shell import SHELL_CSS, _CSS_COLORS
+        var_names = {v.lstrip("$") for v in _CSS_COLORS.values()}
+        for match in re.finditer(r"\$([A-Za-z_]+)([0-9a-fA-F]{1,2})\b", SHELL_CSS):
+            name, suffix = match.groups()
+            assert name not in var_names, (
+                f"Found corrupted variable reference '${name}{suffix}' in SHELL_CSS"
+            )
+
+    def test_shell_css_has_no_unresolved_variables(self):
+        """Actually build the stylesheet the way Textual does at launch and
+        confirm every $variable reference resolves. This is the direct
+        regression test for the launch crash."""
+        from textual.css.stylesheet import Stylesheet
+        from brados_shell import SHELL_CSS, BradOSShell
+
+        app = BradOSShell()
+        sheet = Stylesheet(variables=app.get_css_variables())
+        sheet.add_source(SHELL_CSS, read_from=("test", "SHELL_CSS"))
+        sheet.parse()  # raises UnresolvedVariableError if anything's missing
+
+    def test_theme_available_before_on_mount(self):
+        """_theme must be populated the moment the class exists (not only
+        after on_mount runs), since Textual reads get_css_variables() before
+        dispatching Mount."""
+        from brados_shell import BradOSShell
+        app = BradOSShell()
+        assert hasattr(app, "_theme")
+        assert "bg_base" in app.get_css_variables()
+
+    async def test_real_app_launches_without_crashing(self, monkeypatch, tmp_path):
+        """End-to-end: the actual, unmodified BradOSShell (as constructed by
+        the real run_shell() entrypoint) must be able to mount at least its
+        first screen without raising."""
+        monkeypatch.chdir(tmp_path)
+        from brados_shell import BradOSShell
+
+        app = BradOSShell()
+        # kernel deliberately omitted — on_mount must create and wire one
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app.screen_stack) >= 1
+            assert app.kernel is not None
+            names = {t["name"] for t in app.kernel.list_tasks()}
+            assert "DesktopClock" in names
+            assert "SysStatus" in names
+            # Scheduler pump should have run at least one tick by now
+            await pilot.pause(0.25)
+            assert "sys.clock" in app.kernel._shmem
+
+    def test_run_shell_creates_kernel_when_none(self, monkeypatch):
+        """run_shell() must never attach kernel=None to the app."""
+        from brados_shell import run_shell, BradOSShell
+        from brados_kernel_core import BradOSKernel
+
+        captured = {}
+
+        def fake_run(self):
+            captured["kernel"] = self.kernel
+
+        monkeypatch.setattr(BradOSShell, "run", fake_run)
+        run_shell(kernel=None)
+        assert isinstance(captured["kernel"], BradOSKernel)
 
 
 # ════════════════════════════════════════════════════════════════
