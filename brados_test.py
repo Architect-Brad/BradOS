@@ -1012,6 +1012,119 @@ class TestMesh:
 
 
 # ════════════════════════════════════════════════════════════════
+# BRADMUSIC (pure helpers — no real audio required)
+# ════════════════════════════════════════════════════════════════
+
+class TestBradMusic:
+    def test_lrc_parse_and_get_line(self, tmp_path):
+        from brados_music import LrcParser
+
+        lrc = tmp_path / "song.lrc"
+        lrc.write_text(
+            "[00:00.00]Intro\n"
+            "[00:05.50]First line\n"
+            "[00:12.00]Second line\n"
+            "[ti:ignored metadata]\n",
+            encoding="utf-8",
+        )
+        lines = LrcParser.parse(str(lrc))
+        assert len(lines) == 3
+        assert lines[0] == (0.0, "Intro")
+        assert lines[1][1] == "First line"
+        assert LrcParser.get_line(0.0, lines) == "Intro"
+        assert LrcParser.get_line(6.0, lines) == "First line"
+        assert LrcParser.get_line(20.0, lines) == "Second line"
+        around = LrcParser.get_lines_around(6.0, lines, window=1)
+        assert any(is_cur and text == "First line" for _, text, is_cur in around)
+
+    def test_lrc_find_sidecar(self, tmp_path):
+        from brados_music import LrcParser
+
+        track = tmp_path / "track.mp3"
+        track.write_bytes(b"")
+        lrc = tmp_path / "track.lrc"
+        lrc.write_text("[00:01.00]hi\n", encoding="utf-8")
+        assert LrcParser.find_lyrics_file(str(track)) == str(lrc)
+
+    def test_play_queue_order_and_repeat(self):
+        from brados_music import PlayQueue
+
+        tracks = [
+            {"title": "a", "path": "/a.mp3", "duration": 1.0},
+            {"title": "b", "path": "/b.mp3", "duration": 1.0},
+            {"title": "c", "path": "/c.mp3", "duration": 1.0},
+        ]
+        q = PlayQueue()
+        q.load(tracks, start_index=0)
+        assert q.current["title"] == "a"
+        assert q.next()["title"] == "b"
+        assert q.next()["title"] == "c"
+        assert q.next() is None  # end without repeat
+        q.toggle_repeat()
+        assert q.next()["title"] == "a"
+        assert q.prev()["title"] == "c"
+
+    def test_library_search_and_scan_empty(self, tmp_path):
+        from brados_music import MusicLibrary
+
+        lib = MusicLibrary(music_dir=str(tmp_path / "missing"))
+        lib.scan()
+        assert lib.count() == 0
+        assert lib.search("x") == []
+
+        music = tmp_path / "Music"
+        music.mkdir()
+        (music / "song.mp3").write_bytes(b"not-real-audio")
+        (music / "other.flac").write_bytes(b"x")
+        (music / "readme.txt").write_text("ignore")
+        lib = MusicLibrary(music_dir=str(music))
+        lib.scan()
+        assert lib.count() == 2
+        # Without mutagen, title falls back to stem
+        titles = {t["title"] for t in lib.tracks}
+        assert "song" in titles or any("song" in t for t in titles)
+        hits = lib.search("song")
+        assert len(hits) >= 1
+
+    def test_engine_backend_detect_and_can_play(self, monkeypatch):
+        from brados_music import MusicEngine, FULL_AUDIO_BACKENDS
+
+        def which_none(name):
+            return None
+
+        monkeypatch.setattr("brados_music.shutil.which", which_none)
+        eng = MusicEngine()
+        assert eng.backend_name() == "wave"
+        assert eng.has_full_backend() is False
+        assert eng.status_label() == "none"
+        assert "install mpv" in eng.status_detail().lower() or "ffmpeg" in eng.status_detail().lower()
+        assert eng.can_play_path("/home/x/song.mp3") is False
+        assert eng.can_play_path("/home/x/song.wav") is True
+        assert eng.play("/home/x/song.mp3") is False
+        assert eng._last_error
+
+        def which_mpv(name):
+            return "/usr/bin/mpv" if name == "mpv" else None
+
+        monkeypatch.setattr("brados_music.shutil.which", which_mpv)
+        eng2 = MusicEngine()
+        assert eng2.backend_name() == "mpv"
+        assert eng2.has_full_backend() is True
+        assert eng2.backend_name() in FULL_AUDIO_BACKENDS
+        assert eng2.can_play_path("/home/x/song.mp3") is True
+
+    def test_tag_reader_fallback_without_file(self, tmp_path):
+        from brados_music import TagReader
+
+        p = tmp_path / "My Track.mp3"
+        p.write_bytes(b"")
+        info = TagReader.read(str(p))
+        assert info["path"] == str(p)
+        assert info["title"]  # stem or mutagen title
+        assert "artist" in info
+
+
+# ════════════════════════════════════════════════════════════════
 # DESKTOP MINIMIZE/TASKBAR (regression: MinimizeApp bubbling)
 # ════════════════════════════════════════════════════════════════
 
