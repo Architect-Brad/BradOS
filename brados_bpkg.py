@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
 import time
@@ -34,6 +35,7 @@ class Package:
     pip_versions : dict[str, str] = field(default_factory=dict)  # e.g. {"requests": ">=2.28"}
     bpkg_deps    : list[str]     = field(default_factory=list)
     install_script: str          = ""        # shell snippet run after pip
+    script_sha256 : str          = ""        # sha256 of install_script, required for remote pkgs
     homepage     : str           = ""
     license      : str           = "MIT"
     size_kb      : int           = 0
@@ -41,6 +43,16 @@ class Package:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def script_matches_checksum(self) -> bool:
+        """True if install_script's sha256 matches the declared script_sha256.
+        A package with no install_script trivially matches (nothing to run)."""
+        if not self.install_script:
+            return True
+        if not self.script_sha256:
+            return False
+        digest = hashlib.sha256(self.install_script.encode("utf-8")).hexdigest()
+        return digest == self.script_sha256
 
     @classmethod
     def from_dict(cls, d: dict) -> "Package":
@@ -149,13 +161,27 @@ class PackageRegistry:
 
     def __init__(self):
         self._packages: dict[str, Package] = {}
+        self._trusted: set[str] = set()   # names of packages shipped in-tree (builtin)
         self._load_builtin()
         self._load_cache()
+
+    def is_trusted(self, name: str) -> bool:
+        """Builtin packages ship with the source tree and are reviewed with it;
+        anything loaded from the remote registry/cache is not trusted by default
+        and must carry a matching script_sha256 before its install_script runs."""
+        return name in self._trusted
 
     def _load_builtin(self) -> None:
         for pkg_dict in BUILTIN_REGISTRY:
             pkg = Package.from_dict(pkg_dict)
+            # Builtins are reviewed alongside the source, so we auto-pin their
+            # checksum here rather than hand-computing it for every entry above.
+            if pkg.install_script and not pkg.script_sha256:
+                pkg.script_sha256 = hashlib.sha256(
+                    pkg.install_script.encode("utf-8")
+                ).hexdigest()
             self._packages[pkg.name] = pkg
+            self._trusted.add(pkg.name)
 
     def _load_cache(self) -> None:
         if not os.path.exists(self.CACHE_PATH):
@@ -168,6 +194,14 @@ class PackageRegistry:
                 data = json.load(f)
             for pkg_dict in data.get("packages", []):
                 pkg = Package.from_dict(pkg_dict)
+                # Never let a cached/remote entry shadow a builtin's trust status,
+                # even if it reuses the same package name.
+                if pkg.name in self._trusted:
+                    logger.warning(
+                        f"Registry cache package '{pkg.name}' collides with a "
+                        "builtin package name; ignoring remote entry."
+                    )
+                    continue
                 self._packages[pkg.name] = pkg
         except Exception as e:
             logger.warning(f"Registry cache load failed: {e}")
@@ -189,6 +223,12 @@ class PackageRegistry:
             os.replace(tmp, self.CACHE_PATH)
             for pkg_dict in data.get("packages", []):
                 pkg = Package.from_dict(pkg_dict)
+                if pkg.name in self._trusted:
+                    logger.warning(
+                        f"Remote registry package '{pkg.name}' collides with a "
+                        "builtin package name; ignoring remote entry."
+                    )
+                    continue
                 self._packages[pkg.name] = pkg
             if progress:
                 progress(f"Registry updated: {len(data.get('packages',[]))} packages")
@@ -356,7 +396,12 @@ class BpkgManager:
     # ── Core operations ────────────────────────────────────────────────────
 
     def install(self, name: str,
-                progress: Callable[[str], None] | None = None) -> InstallResult:
+                progress: Callable[[str], None] | None = None,
+                allow_unverified_scripts: bool = False) -> InstallResult:
+        """Install a package. If the package's install_script did not ship
+        with the trusted (builtin) registry and its script_sha256 doesn't
+        match, the script is skipped unless allow_unverified_scripts=True is
+        explicitly passed by the caller (e.g. after prompting the user)."""
         t0   = time.monotonic()
         msgs : list[str] = []
 
@@ -392,12 +437,26 @@ class BpkgManager:
                 emit(f"pip install failed for {name}")
                 return InstallResult(False, name, msgs, time.monotonic() - t0)
 
-        # Run install script if any
+        # Run install script if any — gated on trust + checksum
         if pkg.install_script:
-            emit("Running post-install script…")
-            rc = os.system(pkg.install_script)
-            if rc != 0:
-                emit(f"Post-install script exited with code {rc}")
+            verified = self.registry.is_trusted(name) or pkg.script_matches_checksum()
+            if verified:
+                emit("Running post-install script…")
+                rc = subprocess.run(pkg.install_script, shell=True).returncode
+                if rc != 0:
+                    emit(f"Post-install script exited with code {rc}")
+            elif allow_unverified_scripts:
+                emit("⚠ Running UNVERIFIED post-install script (user override)…")
+                rc = subprocess.run(pkg.install_script, shell=True).returncode
+                if rc != 0:
+                    emit(f"Post-install script exited with code {rc}")
+            else:
+                emit(
+                    f"⚠ Skipped install_script for '{name}': it did not come from "
+                    "the trusted builtin registry and its checksum does not match "
+                    "script_sha256. Re-run with allow_unverified_scripts=True to "
+                    "run it anyway (not recommended for scripts you haven't reviewed)."
+                )
 
         self.db.mark_installed(pkg)
         emit(f"✓  {name} v{pkg.version} installed successfully")
