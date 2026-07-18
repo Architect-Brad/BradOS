@@ -25,10 +25,11 @@ classifiers = [
     "Topic :: System :: Operating System",
 ]
 
-dependencies = ["textual>=8.0.0", "mutagen"]
+dependencies = ["textual>=8.0.0"]
 
 [project.optional-dependencies]
-full = ["psutil", "requests", "cryptography", "pyyaml"]
+music = ["mutagen"]
+full = ["psutil", "requests", "cryptography", "pyyaml", "mutagen"]
 dev = ["pytest", "pytest-asyncio"]
 
 [tool.pytest.ini_options]

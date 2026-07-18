@@ -59,7 +59,10 @@ cd BradOS
 pip install textual
 
 # Recommended optional deps
-pip install psutil requests cryptography pyyaml mutagen
+pip install psutil requests cryptography pyyaml
+
+# BradMusic tags (playback still needs mpv or ffmpeg on the host)
+pip install 'brados[music]'   # or: pip install mutagen
 
 python brados.py --shell     # Ocean Dark desktop (recommended)
 python brados.py             # Classic menu / mode selector
@@ -183,7 +186,8 @@ Coverage includes VFS, drivers, kernel (`tick`, desktop tasks), BradSec (tokens,
 | Package | Required | Purpose |
 |---------|----------|---------|
 | `textual` | **Yes** (desktop) | TUI framework |
-| `mutagen` | Declared for music | Tags in BradMusic (player degrades without backends) |
+| `mutagen` | Optional (`brados[music]`) | Rich tags/cover art in BradMusic |
+| `mpv` / `ffmpeg` | Optional (host) | Real audio playback for BradMusic |
 | `psutil` | Optional | Live CPU/RAM/disk |
 | `requests` | Optional | HTTPS browser (urllib fallback) |
 | `cryptography` | Optional | Fernet vault (XOR fallback) |
