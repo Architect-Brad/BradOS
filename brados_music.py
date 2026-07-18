@@ -849,8 +849,15 @@ class MusicDownloader:
 class MusicProgressBar(Widget):
     """Custom progress bar for music playback."""
 
-    def __init__(self, duration: float = 0.0, position: float = 0.0) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        duration: float = 0.0,
+        position: float = 0.0,
+        *args,
+        **kwargs,
+    ) -> None:
+        # Forward id=, classes=, etc. to textual.widget.Widget
+        super().__init__(*args, **kwargs)
         self._duration = duration
         self._position = position
 

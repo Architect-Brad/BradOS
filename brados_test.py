@@ -1126,6 +1126,15 @@ class TestBradMusic:
         assert info["title"]  # stem or mutagen title
         assert "artist" in info
 
+    def test_progress_bar_accepts_textual_id(self):
+        """compose() yields MusicProgressBar(id=...) — must not TypeError."""
+        from brados_music import MusicProgressBar
+
+        bar = MusicProgressBar(id="music-progress")
+        assert bar.id == "music-progress"
+        bar.update(30.0, 120.0)
+        assert "00:30" in bar.render() or bar._position == 30.0
+
 
 # ════════════════════════════════════════════════════════════════
 # 60-SECOND DEMO (headless)
