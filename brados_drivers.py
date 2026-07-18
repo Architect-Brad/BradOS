@@ -290,7 +290,7 @@ class NetworkDriver(Driver):
                                          if a.family == socket.AF_INET]}
                 for name, addrs in psutil.net_if_addrs().items()
             ]
-        except ImportError:
+        except (ImportError, PermissionError, OSError):
             return [{"name": "lo", "addrs": ["127.0.0.1"]}]
 
 
@@ -629,6 +629,146 @@ class ProcessDriver(Driver):
         raise NotImplementedError(f"ProcessDriver: unknown ioctl {command}")
 
 
+# ── DeviceDriver (hardware device abstraction) ────────────────────────────────
+
+class DeviceDriver(Driver):
+    """Base class for hardware device drivers.
+
+    Provides a standard interface for VFS-backed device files in /dev/.
+    Subclasses implement:
+      - read(address, length) -> bytes    (e.g. GPIO pin read, I2C register read)
+      - write(address, data: bytes) -> int (e.g. GPIO pin write, I2C register write)
+
+    The DevFSDriver mounts instances at /dev/<name>/<register>.
+    """
+
+    name    = "device"
+    version = "0.1.0"
+
+    def __init__(self):
+        self._registers: dict[str, bytes] = {}
+        self._lock = threading.Lock()
+
+    def init(self) -> bool:
+        """Probe hardware availability. Override in subclasses."""
+        return True
+
+    def shutdown(self) -> None:
+        """Power off, release pins, etc."""
+        pass
+
+    def read_reg(self, reg: str, length: int = -1, offset: int = 0) -> bytes:
+        """Read from a named register."""
+        with self._lock:
+            data = self._registers.get(reg, b"")
+            data = data[offset:]
+            return data if length < 0 else data[:length]
+
+    def write_reg(self, reg: str, data: bytes, offset: int = 0) -> int:
+        """Write to a named register."""
+        with self._lock:
+            self._registers[reg] = data
+        return len(data)
+
+    @property
+    def registers(self) -> list[str]:
+        with self._lock:
+            return list(self._registers.keys())
+
+
+class GPIODriver(DeviceDriver):
+    """Virtual GPIO driver.
+
+    On real hardware this would use /sys/class/gpio, libgpiod, or
+    a microcontroller link.  Here it's a register-based simulator
+    that the desktop shell can exercise to demonstrate device I/O.
+
+    Pins: port0 … port31  (each holds a b"0" or b"1" value)
+    """
+
+    name    = "brados_gpio"
+    version = "1.0.0"
+
+    IOCTL_SET_DIR  = 0x50   # arg = (pin, "in"|"out")
+    IOCTL_GET_DIR  = 0x51   # arg = pin → "in"|"out"
+    IOCTL_PWM      = 0x52   # arg = (pin, duty_cycle_0_100)
+
+    def __init__(self):
+        super().__init__()
+        self._directions: dict[str, str] = {}
+        self._analog: dict[str, int] = {}
+
+    def init(self) -> bool:
+        for i in range(32):
+            pin = f"port{i}"
+            self._registers[pin] = b"0"
+            self._directions[pin] = "in"
+        for i in range(4):
+            self._registers[f"pwm{i}"] = b"0"
+            self._analog[f"pwm{i}"] = 0
+        return True
+
+    def ioctl(self, command: int, arg: Any = None) -> Any:
+        if command == self.IOCTL_SET_DIR and arg:
+            pin, direction = arg
+            if pin in self._directions:
+                self._directions[pin] = direction
+                return 0
+            return -1
+        if command == self.IOCTL_GET_DIR and arg is not None:
+            return self._directions.get(str(arg), "unknown")
+        if command == self.IOCTL_PWM and arg:
+            pin, duty = arg
+            key = f"pwm{pin[-1]}" if pin.startswith("pwm") else pin
+            if key in self._analog:
+                self._analog[key] = max(0, min(100, int(duty)))
+                return 0
+            return -1
+        raise NotImplementedError(f"GPIODriver: unknown ioctl {command}")
+
+    @property
+    def info(self) -> DriverInfo:
+        pins = sum(1 for v in self._directions.values() if v == "out")
+        return DriverInfo(self.name, self.version, "active",
+                          f"32 pins ({pins} outputs)")
+
+
+class PWMLEDDriver(DeviceDriver):
+    """PWM LED (register-based) — example higher-level device.
+
+    Overlays a PWM controller on one GPIO-compatible register.
+    """
+
+    name    = "brados_pwmled"
+    version = "1.0.0"
+
+    def __init__(self, gpio: GPIODriver | None = None):
+        super().__init__()
+        self._gpio = gpio
+        self._brightness = 0
+
+    def init(self) -> bool:
+        self._registers["brightness"] = b"0"
+        self._registers["state"] = b"off"
+        return True
+
+    def write_reg(self, reg: str, data: bytes, offset: int = 0) -> int:
+        if reg == "brightness":
+            val = max(0, min(100, int(data.strip())))
+            self._brightness = val
+            self._registers["brightness"] = str(val).encode()
+            if self._gpio:
+                pwm_pin = "pwm0"
+                try:
+                    self._gpio.ioctl(self._gpio.IOCTL_PWM, (pwm_pin, val))
+                except Exception:
+                    pass
+        elif reg == "state":
+            state = data.strip().decode()
+            self._registers["state"] = state.encode()
+        return len(data)
+
+
 # ── Module-level singleton ────────────────────────────────────────────────────
 
 def create_default_registry(vfs=None) -> DriverRegistry:
@@ -640,4 +780,7 @@ def create_default_registry(vfs=None) -> DriverRegistry:
     reg.register(InputDriver())
     reg.register(AudioDriver())
     reg.register(ProcessDriver())
+    gpio = GPIODriver()
+    reg.register(gpio)
+    reg.register(PWMLEDDriver(gpio=gpio))
     return reg
