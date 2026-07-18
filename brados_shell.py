@@ -1361,7 +1361,7 @@ class SplashScreen(Screen):
         with Container(id="splash-box"):
             yield Static(LOGO, id="splash-logo")
             yield Static(
-                "Adaptive Desktop OS  ·  v3.0.0  ·  Ocean Dark",
+                "Adaptive Desktop OS  ·  v3.1.0  ·  Ocean Dark",
                 id="splash-tagline",
             )
             yield RichLog(id="splash-boot-log", highlight=False, markup=True)
@@ -1444,7 +1444,7 @@ class LoginScreen(Screen):
     def compose(self) -> ComposeResult:
         with Container(id="login-box"):
             yield Static(LOGO, id="login-logo")
-            yield Static("Adaptive Desktop OS  ·  v3.0.0  ·  Ocean Dark", id="login-sub")
+            yield Static("Adaptive Desktop OS  ·  v3.1.0  ·  Ocean Dark", id="login-sub")
             with Horizontal(classes="lfield"):
                 yield Label("Username", classes="llabel")
                 with Container(classes="linput"):
@@ -4461,7 +4461,7 @@ class SettingsWindow(BradWindow):
             content = (
                 f"[bold #00d4ff]System Information[/]\n"
                 f"[#1e3a5f]{'─' * 40}[/]\n\n"
-                f"[#7f8c8d]BradOS:[/]        [#ecf0f1]v3.0.0  Ocean Dark[/]\n"
+                f"[#7f8c8d]BradOS:[/]        [#ecf0f1]v3.1.0  Ocean Dark[/]\n"
                 f"[#7f8c8d]Python:[/]        [#ecf0f1]{sys.version.split()[0]}[/]\n"
                 f"[#7f8c8d]OS:[/]            [#ecf0f1]{platform.system()} {platform.release()}[/]\n"
                 f"[#7f8c8d]Architecture:[/]  [#ecf0f1]{platform.machine()}[/]\n"
@@ -6684,7 +6684,7 @@ class _PromptModal(ModalScreen):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class BradOSShell(App):
-    TITLE    = "BradOS v3.0"
+    TITLE    = "BradOS v3.1"
     CSS      = SHELL_CSS
     BINDINGS: ClassVar = [Binding("ctrl+q", "quit", "Quit")]
 
@@ -6816,7 +6816,7 @@ class BradOSShell(App):
         self._theme = theme
         self.stylesheet.set_variables(dict(theme))
         self.refresh_css()
-        self.title = f"BradOS v3.0 — {theme['name']}"
+        self.title = f"BradOS v3.1 — {theme['name']}"
 
     def get_css_variables(self) -> dict[str, str]:
         """Expose theme colors as CSS $variables."""

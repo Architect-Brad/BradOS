@@ -1,6 +1,6 @@
 # ⬡ BradOS
 
-**v3.0 · Ocean Dark · A pure-Python userland OS layer for the terminal.**
+**v3.1.0 · Ocean Dark · A pure-Python userland OS layer for the terminal.**
 
 BradOS is a **cooperative microkernel + mount-table VFS + capability security + Textual desktop** you can run over SSH or Termux. It is **not** a host operating system and does **not** replace Linux — it runs *on* Python and uses the host for real sockets, processes, and files (inside a sandbox).
 

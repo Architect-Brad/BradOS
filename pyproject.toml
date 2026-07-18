@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brados"
-version = "3.0.0"
-description = "The only terminal OS that actually does security"
+version = "3.1.0"
+description = "Pure-Python userland OS layer: VFS, capabilities, cooperative kernel, Textual desktop"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

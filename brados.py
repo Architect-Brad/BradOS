@@ -273,7 +273,7 @@ def run_brados():
     init_dirs()
     clear_screen()
     print_header("Welcome to BradOS",
-                 subtitle="Adaptive Desktop OS  ·  v3.0.0  ·  Ocean Dark")
+                 subtitle="Adaptive Desktop OS  ·  v3.1.0  ·  Ocean Dark")
 
     if is_emoji_supported():
         print_status("Emoji support detected.", "success")
