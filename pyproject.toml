@@ -25,10 +25,15 @@ classifiers = [
     "Topic :: System :: Operating System",
 ]
 
-dependencies = ["textual>=8.0.0"]
+dependencies = ["textual>=8.0.0", "mutagen"]
 
 [project.optional-dependencies]
 full = ["psutil", "requests", "cryptography", "pyyaml"]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["asyncio: mark test as an asyncio coroutine test"]
 
 [project.urls]
 repository = "https://github.com/Architect-Brad/BradOS"
@@ -41,6 +46,6 @@ brados = "brados:run_shell"
 py-modules = [
     "brados", "brados_apps", "brados_bpkg", "brados_brash",
     "brados_drivers", "brados_gui", "brados_kernel", "brados_kernel_core",
-    "brados_mail_server", "brados_security", "brados_shell",
+    "brados_mail_server", "brados_music", "brados_security", "brados_shell",
     "brados_system", "brados_test", "brados_vfs"
 ]
