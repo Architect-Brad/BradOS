@@ -227,6 +227,17 @@ def run_kernel_mode(user_profile):
     kernel         = BradOSKernel()
     kernel.vfs     = vfs
     kernel.drivers = drivers
+    if vfs is not None:
+        try:
+            from brados_security import get_bradsec
+            from brados_process import ProcessManager
+            sec = get_bradsec()
+            sec.start()
+            vfs.set_sec(sec)
+            kernel.sec = sec
+            kernel.proc_mgr = ProcessManager(vfs=vfs)
+        except Exception:
+            pass
     uid            = kernel.authenticate(username, pwd)
 
     if uid is None:
@@ -306,8 +317,9 @@ def run_brados():
         case "1": run_classic_mode(user_profile)
         case "2": run_kernel_mode(user_profile)
         case "3":
-            import os as _os
-            _os.execv(sys.executable, [sys.executable, __file__, "--shell"])
+            from brados_shell import run_shell
+            run_shell()
+            sys.exit(0)
 
 
 # ── Console-scripts entry point ────────────────────────────────────────────────
