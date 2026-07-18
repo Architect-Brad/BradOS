@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from textual.widgets import RichLog, Input, Static
+    from brados_vfs import VirtualFileSystem
 
 try:
     import psutil
@@ -58,6 +59,8 @@ COMMON_COMMANDS: dict[str, str] = {
     "help":   "Show help for built-in commands",
     "env":    "Print environment variables",
     "pwd":    "Print working directory",
+    "alias":  "Create or list command aliases",
+    "unalias":"Remove a command alias",
 }
 
 DEFAULT_PROMPT_TEMPLATE = "{user}@brados:{cwd}$ "
@@ -253,6 +256,11 @@ class BrashShell:
         self._hist_idx = 0
         self._last_prefix = ""
         self._last_suggestion = ""
+        self._last_status = 0
+
+        self._aliases: dict[str, str] = {}
+        self._alias_path = "/home/.brash_aliases.json"
+        self._load_aliases()
 
         self._builtins: dict[str, Callable] = {
             "cd":    self._cmd_cd, "pwd":  self._cmd_pwd,
@@ -262,6 +270,7 @@ class BrashShell:
             "cp":    self._cmd_cp, "mv":   self._cmd_mv,
             "ps":    self._cmd_ps, "env":  self._cmd_env,
             "exit":  self._cmd_exit,"help": self._cmd_help,
+            "alias": self._cmd_alias, "unalias": self._cmd_unalias,
         }
 
     # ── Properties ───────────────────────────────────────────────────────
@@ -333,14 +342,130 @@ class BrashShell:
         ) + text
         self.write_output(echo_line.rstrip())
 
-        pipeline = BrashParser.parse(text)
-        await self._execute_pipeline(pipeline)
+        for seg_text, connector in self._split_chain(text):
+            if connector == "and" and self._last_status != 0:
+                continue    # previous command failed — skip the &&-gated one
+            if connector == "or" and self._last_status == 0:
+                continue    # previous command succeeded — skip the ||-gated one
+            expanded = self._expand_aliases(seg_text)
+            pipeline = BrashParser.parse(expanded)
+            self._last_status = await self._execute_pipeline(pipeline)
+
         self.refresh_prompt()
+
+    @staticmethod
+    def _split_chain(text: str) -> list[tuple[str, str | None]]:
+        """Split on top-level ';', '&&', '||' (outside quotes). Each pipe
+        ('|') stage is left untouched — that's still handled by BrashParser.
+        Returns (segment_text, connector_before_this_segment); connector is
+        None for the first segment, else 'and' / 'or' / 'seq'."""
+        segments: list[tuple[str, str | None]] = []
+        buf: list[str] = []
+        connector: str | None = None
+        in_squote = in_dquote = False
+        i, n = 0, len(text)
+        while i < n:
+            c = text[i]
+            if c == "'" and not in_dquote:
+                in_squote = not in_squote
+                buf.append(c); i += 1; continue
+            if c == '"' and not in_squote:
+                in_dquote = not in_dquote
+                buf.append(c); i += 1; continue
+            if not in_squote and not in_dquote:
+                if text[i:i + 2] == "&&":
+                    segments.append(("".join(buf).strip(), connector))
+                    buf, connector = [], "and"
+                    i += 2; continue
+                if text[i:i + 2] == "||":
+                    segments.append(("".join(buf).strip(), connector))
+                    buf, connector = [], "or"
+                    i += 2; continue
+                if c == ";":
+                    segments.append(("".join(buf).strip(), connector))
+                    buf, connector = [], "seq"
+                    i += 1; continue
+            buf.append(c); i += 1
+        segments.append(("".join(buf).strip(), connector))
+        return [(s, c) for s, c in segments if s]
+
+    # ── Aliases ───────────────────────────────────────────────────────────
+
+    def _load_aliases(self) -> None:
+        if not self.vfs:
+            return
+        try:
+            if self.vfs.exists(self._alias_path):
+                self._aliases = json.loads(self.vfs.read_text(self._alias_path))
+        except Exception:
+            pass    # corrupt/missing alias file — start fresh rather than crash the shell
+
+    def _save_aliases(self) -> None:
+        if not self.vfs:
+            return
+        try:
+            self.vfs.write_text(self._alias_path, json.dumps(self._aliases))
+        except Exception:
+            pass
+
+    def _expand_aliases(self, text: str, _depth: int = 0) -> str:
+        """Expand only the leading command word of a chain segment (the
+        common case: `alias gs='git status'` then typing `gs`). Aliases
+        aren't expanded for later stages of a pipe — e.g. in `cat f | gs`
+        only `cat` would be checked — since that needs re-entering the
+        pipe-aware parser per stage, which BrashParser doesn't expose yet."""
+        if _depth > 10 or not text.strip():
+            return text
+        parts = text.split(None, 1)
+        first = parts[0]
+        if first in self._aliases:
+            rest = parts[1] if len(parts) > 1 else ""
+            expanded = self._aliases[first] + (" " + rest if rest else "")
+            return self._expand_aliases(expanded, _depth + 1)
+        return text
+
+    def _cmd_alias(self, args: list[str], **kw) -> str:
+        if not args:
+            if not self._aliases:
+                return "[#7f8c8d]No aliases defined[/]\n"
+            return "\n".join(f"alias {k}='{v}'" for k, v in sorted(self._aliases.items())) + "\n"
+        joined = " ".join(args)
+        if "=" not in joined:
+            name = args[0]
+            if name in self._aliases:
+                return f"alias {name}='{self._aliases[name]}'\n"
+            return f"alias: {name}: not found\n"
+        name, _, value = joined.partition("=")
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if not name:
+            return "Usage: alias name='command'\n"
+        self._aliases[name] = value
+        self._save_aliases()
+        return ""
+
+    def _cmd_unalias(self, args: list[str], **kw) -> str:
+        if not args:
+            return "Usage: unalias <name>\n"
+        name = args[0]
+        if name in self._aliases:
+            del self._aliases[name]
+            self._save_aliases()
+            return ""
+        return f"unalias: {name}: not found\n"
 
     # ── Pipeline execution ──────────────────────────────────────────────
 
-    async def _execute_pipeline(self, pipeline: Pipeline) -> None:
+    async def _execute_pipeline(self, pipeline: Pipeline) -> int:
+        """Run a (possibly piped) command sequence. Returns an exit status:
+        0 for success, 1 for failure — used by &&/|| chaining. A builtin
+        counts as failed if it raised, or if its output follows this
+        codebase's existing error convention (`"cmd: ..."` or `"Usage: ..."`,
+        already used throughout the _cmd_* methods below)."""
         pipe_buf: str | None = None
+        status = 0
         for idx, seg in enumerate(pipeline.segments):
             is_last = idx == len(pipeline.segments) - 1
             cmd, args = seg.command, seg.args
@@ -348,13 +473,19 @@ class BrashShell:
                 continue
 
             if cmd in self._builtins:
-                output = self._builtins[cmd](args, stdin=pipe_buf)
+                try:
+                    output = self._builtins[cmd](args, stdin=pipe_buf)
+                    stripped = (output or "").lstrip()
+                    status = 1 if (stripped.startswith(f"{cmd}: ") or stripped.startswith("Usage:")) else 0
+                except Exception as e:
+                    output = f"{cmd}: {e}\n"
+                    status = 1
             else:
-                output = await self._exec_host(cmd, args, pipe_buf)
+                output, status = await self._exec_host(cmd, args, pipe_buf)
 
             if seg.redirect:
                 self._handle_redirect(output or "", seg.redirect)
-                return
+                return status
 
             if is_last:
                 if output:
@@ -362,6 +493,7 @@ class BrashShell:
                         self.write_output(line)
             else:
                 pipe_buf = output or ""
+        return status
 
     def _handle_redirect(self, output: str, redir: Redirect) -> None:
         if not self.vfs:
@@ -376,7 +508,7 @@ class BrashShell:
         except Exception as e:
             self.write_output(f"[#ff4757]Error writing {redir.target}: {e}[/]")
 
-    async def _exec_host(self, cmd: str, args: list[str], stdin: str | None) -> str:
+    async def _exec_host(self, cmd: str, args: list[str], stdin: str | None) -> tuple[str, int]:
         full = cmd + " " + " ".join(args) if args else cmd
         lines: list[str] = []
         try:
@@ -399,9 +531,12 @@ class BrashShell:
                 if clean:
                     lines.append(clean)
             await proc.wait()
+            status = proc.returncode or 0
         except Exception as e:
             lines.append(f"Error: {e}")
-        return "\n".join(lines) + ("\n" if lines else "")
+            status = 1
+        output = "\n".join(lines) + ("\n" if lines else "")
+        return output, status
 
     # ── Built-in commands ────────────────────────────────────────────────
 
@@ -597,11 +732,17 @@ class BrashShell:
             ("mv <src> <dst>","Move/rename file"),
             ("ps",           "List running processes"),
             ("env",          "Print environment variables"),
+            ("alias [n=cmd]","Create/list aliases (no args: list all)"),
+            ("unalias <n>",  "Remove an alias"),
             ("exit",         "Exit the shell"),
             ("help",         "Show this help message"),
         ]
         for name, desc in items:
             lines.append(f"  [#00d4ff]{name:<20}[/] [#7f8c8d]{desc}[/]")
+        lines.append("")
+        lines.append("[bold #00d4ff]Chaining:[/] [#7f8c8d]cmd1 ; cmd2[/] runs both  ·  "
+                     "[#7f8c8d]cmd1 && cmd2[/] runs cmd2 only if cmd1 succeeded  ·  "
+                     "[#7f8c8d]cmd1 || cmd2[/] runs cmd2 only if cmd1 failed")
         lines.append("[#7f8c8d]All other commands are forwarded to the host shell.[/]")
         return "\n".join(lines) + "\n"
 
