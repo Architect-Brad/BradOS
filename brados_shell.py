@@ -55,7 +55,10 @@ from brados_system import (
 from brados_apps import safe_eval, html_to_text, init_dirs
 from brados_vfs import create_default_vfs, VirtualFileSystem
 from brados_drivers import create_default_registry, DriverRegistry, NetworkDriver
-from brados_security import BradSec, Cap, get_bradsec, get_bradsec_daemon, BRADSEC_SOCKET_PATH
+from brados_security import (
+    BradSec, Cap, get_bradsec, get_bradsec_daemon, BRADSEC_SOCKET_PATH,
+    DEMO_SESSION_PID, DEMO_GUEST_PID, run_capability_demo,
+)
 from brados_bpkg import BpkgManager, get_bpkg
 from brados_mail_server import get_mail_server
 from brados_mesh import get_mesh, MeshNode, Peer
@@ -4579,6 +4582,7 @@ class BradSecWindow(BradWindow):
                 yield Static("[bold #ff4757]BradSec[/]", classes="panel-heading")
                 for sid, label in [
                     ("status",    "⊛ Status"),
+                    ("demo",      "⚡ Cap Demo"),
                     ("scan",      "⊞ Threat Scan"),
                     ("integrity", "≡ Integrity"),
                     ("audit",     "▤ Audit Log"),
@@ -4595,6 +4599,7 @@ class BradSecWindow(BradWindow):
                 yield RichLog(id="sec-content", markup=True, highlight=False)
                 with Horizontal(id="editor-actions"):
                     yield Button("⟳ Refresh",    id="btn-sec-refresh", classes="btn-primary")
+                    yield Button("⚡ Cap Demo",   id="btn-sec-demo")
                     yield Button("⊞ Run Scan",    id="btn-sec-scan")
                     yield Button("≡ Verify Files",id="btn-sec-verify")
                     yield Button("■ Build Baseline", id="btn-sec-baseline")
@@ -4631,9 +4636,41 @@ class BradSecWindow(BradWindow):
             log.write(f"[#00d4ff]Scan interval:[/]  [#ecf0f1]every 300s[/]")
             log.write("")
             log.write("[bold #7f8c8d]Quick actions:[/]")
+            log.write("  ⚡ Cap Demo      — guest write DENIED, session write allowed")
             log.write("  ⊞ Run Scan      — check permissions, ports, password hashes")
             log.write("  ≡ Verify Files  — compare against SHA-256 baseline")
             log.write("  ■ Build Baseline — create/refresh the integrity manifest")
+
+        elif self._section == "demo":
+            log.write("[bold #00d4ff]Capability Enforcement Demo[/]\n")
+            log.write(
+                f"[#7f8c8d]Session pid={DEMO_SESSION_PID} has FS_WRITE; "
+                f"guest pid={DEMO_GUEST_PID} has FS_READ only.[/]\n"
+            )
+            results = run_capability_demo(self.app.vfs, sec)
+            labels = {
+                "guest_write": "Guest VFS write  (must DENY)",
+                "guest_read": "Guest VFS read   (must ALLOW)",
+                "session_write": "Session VFS write (must ALLOW)",
+                "check_cap_guest": "check_cap(guest, FS_WRITE) → False",
+            }
+            passed = 0
+            for r in results:
+                ok = r.get("ok")
+                passed += 1 if ok else 0
+                mark = "[#2ed573]PASS[/]" if ok else "[#ff4757]FAIL[/]"
+                title = labels.get(r["step"], r["step"])
+                log.write(f"  {mark}  {title}")
+                log.write(f"         [#7f8c8d]{r.get('detail', '')}[/]")
+            total = len(results)
+            color = "#2ed573" if passed == total else "#ff4757"
+            log.write("")
+            log.write(f"[bold {color}]Result: {passed}/{total} steps ok[/]")
+            if passed == total:
+                log.write(
+                    "[#2ed573]Guest cannot write; session can. "
+                    "This is real VFS capability enforcement, not a fake toggle.[/]"
+                )
 
         elif self._section == "scan":
             log.write("[bold #00d4ff]Running threat scan…[/]")
@@ -4695,6 +4732,10 @@ class BradSecWindow(BradWindow):
 
         elif self._section == "caps":
             log.write("[bold #00d4ff]Active Capability Tokens[/]\n")
+            log.write(
+                f"[#7f8c8d]Desktop session pid={DEMO_SESSION_PID}; "
+                f"demo guest pid={DEMO_GUEST_PID} (no FS_WRITE).[/]\n"
+            )
             # Access the internal token table
             with sec._lock:
                 tokens = dict(sec._tokens)
@@ -4703,7 +4744,12 @@ class BradSecWindow(BradWindow):
             for pid, tok in tokens.items():
                 exp = "EXPIRED" if tok.expired else "valid"
                 c   = "#ff4757" if tok.expired else "#2ed573"
-                log.write(f"  [{c}]●[/] pid=[#ecf0f1]{pid}[/] uid=[#ecf0f1]{tok.uid}[/]"
+                role = ""
+                if pid == DEMO_SESSION_PID:
+                    role = " [session]"
+                elif pid == DEMO_GUEST_PID:
+                    role = " [guest demo]"
+                log.write(f"  [{c}]●[/] pid=[#ecf0f1]{pid}[/]{role} uid=[#ecf0f1]{tok.uid}[/]"
                           f" caps=[#ffa502]{tok.caps}[/] [{c}]{exp}[/]")
                 cap_list = []
                 for cap in Cap:
@@ -4711,6 +4757,12 @@ class BradSecWindow(BradWindow):
                         cap_list.append(cap.name)
                 if cap_list:
                     log.write(f"    [#7f8c8d]{' · '.join(cap_list)}[/]")
+                missing = []
+                for cap in (Cap.FS_WRITE, Cap.PROC_FORK, Cap.VAULT_WRITE):
+                    if not tok.has(cap):
+                        missing.append(cap.name)
+                if missing:
+                    log.write(f"    [#ff4757]lacks: {' · '.join(missing)}[/]")
 
     def _run_scan_cached(self):
         return self._sec.scan()
@@ -4719,6 +4771,12 @@ class BradSecWindow(BradWindow):
         bid = event.button.id
         if bid == "btn-close":      self.dismiss(); return
         if bid == "btn-sec-refresh":self._render_sec(); return
+
+        if bid == "btn-sec-demo":
+            self._section = "demo"
+            self._render_sec()
+            self.notify("Capability demo finished — see PASS/FAIL lines.", severity="information")
+            return
 
         if bid == "btn-sec-scan":
             self._section = "scan"
@@ -4748,7 +4806,7 @@ class BradSecWindow(BradWindow):
             return
 
         section_map = {f"sec-{s}": s for s in
-                       ["status","scan","integrity","audit","vault","caps"]}
+                       ["status","demo","scan","integrity","audit","vault","caps"]}
         if bid in section_map:
             self._section = section_map[bid]
             for sid in section_map:
@@ -6663,12 +6721,17 @@ class BradOSShell(App):
         self.security.start()
         # Wire capability-based security into the VFS
         self.vfs.set_sec(self.security)
-        # Issue a session token for desktop apps
-        cap = self.security.issue_token(
-            pid=0, uid=1000,
+        # Session token for desktop apps (FS_READ|FS_WRITE|…) + weaker guest
+        # token used by the BradSec capability demo (guest has no FS_WRITE).
+        self.security.issue_token(
+            pid=DEMO_SESSION_PID, uid=1000,
             caps=Cap.default_user(),
         )
-        self.vfs.set_default_pid(0)
+        self.security.issue_token(
+            pid=DEMO_GUEST_PID, uid=1001,
+            caps=Cap.default_guest(),
+        )
+        self.vfs.set_default_pid(DEMO_SESSION_PID)
         # ProcessManager for real subprocess management
         try:
             from brados_process import ProcessManager as _PM
