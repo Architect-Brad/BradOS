@@ -905,7 +905,6 @@ class FileWatcher:
         if fd < 0:
             raise RuntimeError("inotify_init failed")
 
-        watched: dict[int, str] = {}
         try:
             wd_map: dict[int, str] = {}
             for root, dirs, fnames in os.walk("."):

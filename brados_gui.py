@@ -1904,8 +1904,8 @@ class MonitorScreen(Screen):
                 f"[#64748b]Processes[/] [#c9d1d9]{procs}[/]\n"
                 f"[#64748b]Uptime[/]    [#c9d1d9]{h}h {m}m {s}s[/]\n"
             )
-        except ImportError:
-            return "[#f59e0b]pip install psutil  for live metrics[/]"
+        except (ImportError, PermissionError, OSError):
+            return "[#f59e0b]psutil unavailable[/]"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-back": self.dismiss()

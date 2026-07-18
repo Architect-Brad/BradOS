@@ -106,6 +106,47 @@ def _detect_emoji_support() -> bool:
 EMOJI_SUPPORTED = _detect_emoji_support()
 
 
+def detect_termux() -> bool:
+    """Return True if running inside Termux on Android."""
+    return "ANDROID_ROOT" in os.environ and (
+        "TERMUX_VERSION" in os.environ or
+        "com.termux" in os.environ.get("HOME", "")
+    )
+
+
+def is_termux() -> bool:
+    """Alias for detect_termux()."""
+    return detect_termux()
+
+
+def safe_psutil(*names: str) -> dict[str, float] | None:
+    """Call psutil functions safely, catching ImportError *and* PermissionError.
+
+    Usage:
+        data = safe_psutil('cpu_percent', 'virtual_memory')
+        if data:
+            cpu = data['cpu_percent'](interval=0.5)
+            mem = data['virtual_memory']()
+    """
+    try:
+        import psutil
+        return {n: getattr(psutil, n) for n in names}
+    except (ImportError, PermissionError, OSError):
+        return None
+
+
+def is_mobile_display() -> bool:
+    """Return True if the terminal is small enough for mobile layout."""
+    cols, lines = shutil.get_terminal_size((80, 24))
+    return cols <= 60 or lines <= 20
+
+
+def is_tablet_display() -> bool:
+    """Return True if the terminal is medium-sized (slate/tablet)."""
+    cols, lines = shutil.get_terminal_size((80, 24))
+    return 60 < cols <= 100 and lines > 20
+
+
 def is_emoji_supported() -> bool:
     return EMOJI_SUPPORTED
 
@@ -444,15 +485,24 @@ def system_monitor():
         cpu   = psutil.cpu_percent(interval=1)
         mem   = psutil.virtual_memory()
         disk  = psutil.disk_usage("/")
-        net   = psutil.net_io_counters()
-        procs = len(psutil.pids())
+        try:
+            net   = psutil.net_io_counters()
+            net_sent = f"{net.bytes_sent  // 1024:,} KB"
+            net_recv = f"{net.bytes_recv  // 1024:,} KB"
+        except (PermissionError, OSError):
+            net_sent = "N/A (no perm)"
+            net_recv = "N/A (no perm)"
+        try:
+            procs = len(psutil.pids())
+        except (PermissionError, OSError):
+            procs = -1
         rows = [
             ("CPU Usage",     f"{cpu:.1f} %"),
             ("RAM Used",      f"{mem.used  // (1024**2):,} MB / {mem.total // (1024**2):,} MB  ({mem.percent:.0f}%)"),
             ("Disk Used",     f"{disk.used // (1024**3):,} GB / {disk.total // (1024**3):,} GB  ({disk.percent:.0f}%)"),
-            ("Net Sent",      f"{net.bytes_sent  // 1024:,} KB"),
-            ("Net Received",  f"{net.bytes_recv  // 1024:,} KB"),
-            ("Processes",     str(procs)),
+            ("Net Sent",      net_sent),
+            ("Net Received",  net_recv),
+            ("Processes",     str(procs) if procs >= 0 else "N/A"),
         ]
     except ImportError:
         rows = [
