@@ -61,6 +61,103 @@ class Cap(IntFlag):
         return cls.FS_READ | cls.NET_SEND
 
 
+# PIDs used by the interactive capability demo (BradSec window + tests).
+# Session desktop apps run as DEMO_SESSION_PID; guest is intentionally weaker.
+DEMO_SESSION_PID = 0
+DEMO_GUEST_PID = 9001
+
+
+def run_capability_demo(vfs, sec: "BradSec | None" = None) -> list[dict]:
+    """Prove FS_WRITE is enforced: guest is denied, session user is allowed.
+
+    Steps (each returns ``{step, ok, detail}``):
+      1. guest_write     — must raise PermissionError (no FS_WRITE)
+      2. guest_read      — must succeed (has FS_READ)
+      3. session_write   — must succeed (default_user includes FS_WRITE)
+      4. check_cap_guest — check_cap(guest, FS_WRITE) must be False
+
+    Safe to re-run; uses ``/tmp/cap_demo.txt`` on the given VFS.
+    """
+    if sec is None:
+        sec = get_bradsec()
+    sec.start()
+
+    # Refresh well-known tokens so re-runs stay deterministic.
+    sec.issue_token(DEMO_SESSION_PID, uid=1000, caps=Cap.default_user())
+    sec.issue_token(DEMO_GUEST_PID, uid=1001, caps=Cap.default_guest())
+
+    results: list[dict] = []
+    path = "/tmp/cap_demo.txt"
+
+    # 1) Guest must not write
+    try:
+        vfs.write_text(path, "guest was here\n", caller_pid=DEMO_GUEST_PID)
+        results.append({
+            "step": "guest_write",
+            "ok": False,
+            "detail": "UNEXPECTED: guest write succeeded (FS_WRITE should be denied)",
+        })
+    except PermissionError as e:
+        results.append({
+            "step": "guest_write",
+            "ok": True,
+            "detail": str(e),
+        })
+
+    # 2) Guest may still read
+    try:
+        data = vfs.read_text("/proc/version", caller_pid=DEMO_GUEST_PID)
+        results.append({
+            "step": "guest_read",
+            "ok": True,
+            "detail": data.strip()[:80],
+        })
+    except PermissionError as e:
+        results.append({
+            "step": "guest_read",
+            "ok": False,
+            "detail": f"UNEXPECTED deny on read: {e}",
+        })
+    except Exception as e:
+        results.append({
+            "step": "guest_read",
+            "ok": False,
+            "detail": f"read failed: {e}",
+        })
+
+    # 3) Session user may write
+    try:
+        n = vfs.write_text(path, "session write ok\n", caller_pid=DEMO_SESSION_PID)
+        results.append({
+            "step": "session_write",
+            "ok": True,
+            "detail": f"wrote {n} bytes to {path}",
+        })
+    except PermissionError as e:
+        results.append({
+            "step": "session_write",
+            "ok": False,
+            "detail": f"UNEXPECTED deny on session write: {e}",
+        })
+
+    # 4) Direct capability check
+    allowed = sec.check_cap(DEMO_GUEST_PID, Cap.FS_WRITE)
+    results.append({
+        "step": "check_cap_guest",
+        "ok": not allowed,
+        "detail": f"check_cap(pid={DEMO_GUEST_PID}, FS_WRITE) = {allowed}",
+    })
+
+    passed = sum(1 for r in results if r["ok"])
+    sec.audit.write(
+        "INFO" if passed == len(results) else "WARNING",
+        "CAPS",
+        f"Capability demo: {passed}/{len(results)} steps ok",
+        {"results": results},
+    )
+    return results
+
+
 # ── Capability Token ──────────────────────────────────────────────────────────
 
 @dataclass
