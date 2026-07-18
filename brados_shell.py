@@ -1469,6 +1469,8 @@ class LoginScreen(Screen):
         return DesktopScreen()
 
     def _go_home(self) -> None:
+        # MobileLauncher launches apps itself (on_button_pressed → push_screen).
+        # No dismiss callback here — keep login → home a plain screen push.
         self.app.push_screen(self._home_screen())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -1487,13 +1489,6 @@ class LoginScreen(Screen):
         self.app.user_profile = load_user_profile(uname)
         self.query_one("#login-err", Static).update("")
         self._go_home()
-
-    def _go_home(self) -> None:
-        home = self._home_screen()
-        if isinstance(home, MobileLauncher):
-            self.app.push_screen(home, self._on_app_launch)
-        else:
-            self.app.push_screen(home)
 
     async def _shake(self) -> None:
         box = self.query_one("#login-box")

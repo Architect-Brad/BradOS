@@ -1128,6 +1128,35 @@ class TestBradMusic:
 # DESKTOP MINIMIZE/TASKBAR (regression: MinimizeApp bubbling)
 # ════════════════════════════════════════════════════════════════
 
+class TestLoginMobile:
+    """Regression: mobile login crashed with AttributeError on _on_app_launch."""
+
+    def test_go_home_does_not_reference_missing_callback(self):
+        import inspect
+        from brados_shell import LoginScreen
+
+        src = inspect.getsource(LoginScreen._go_home)
+        assert "_on_app_launch" not in src
+
+    async def test_guest_login_on_mobile_opens_launcher(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("brados_shell.is_mobile_display", lambda: True)
+        from brados_shell import BradOSShell, LoginScreen, MobileLauncher
+        from brados_apps import init_dirs
+
+        def light_mount(self):
+            init_dirs()
+            self.push_screen(LoginScreen())
+
+        monkeypatch.setattr(BradOSShell, "on_mount", light_mount)
+        app = BradOSShell()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.click("#btn-guest")
+            await pilot.pause()
+            assert any(isinstance(s, MobileLauncher) for s in app.screen_stack)
+
+
 class TestDesktopMinimize:
     """MinimizeApp is posted by a BradWindow (a Screen) and previously only
     had a handler on DesktopScreen — but sibling Screens on the stack are not
