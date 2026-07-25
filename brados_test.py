@@ -1299,9 +1299,12 @@ class TestMobileTouchControls:
     async def test_terminal_mobile_chrome_and_type(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("brados_shell.is_mobile_display", lambda: True)
-        from brados_shell import BradOSShell, TerminalWindow, _inject_soft_key
+        from brados_shell import (
+            BradOSShell, TerminalWindow, _inject_soft_key, MobileSoftKeyboard,
+        )
         from brados_apps import init_dirs
-        from textual.widgets import Input
+        from textual.widgets import Input, Button
+        from textual.message import Message
 
         def light_mount(self):
             init_dirs()
@@ -1314,13 +1317,28 @@ class TestMobileTouchControls:
             assert isinstance(app.screen, TerminalWindow)
             # Nav + soft keyboard mounted
             assert app.screen.query("#mobile-app-nav")
-            assert app.screen.query("#mobile-soft-kbd")
+            kbd = app.screen.query_one(MobileSoftKeyboard)
+            kbd.set_visible(True)
+            await pilot.pause()
             inp = app.screen.query_one("#term-input", Input)
             inp.focus()
+            app.screen._soft_target = inp
             await pilot.pause()
             _inject_soft_key(app.screen, "a")
             _inject_soft_key(app.screen, "b")
             assert inp.value == "ab"
+            # Simulate soft-key press while a random button "would" be focused
+            # (regression: keys did nothing because focus left the Input)
+            key_btn = app.screen.query_one("#sk-lit-99", Button)  # 'c'
+            # Steal focus like a real tap used to
+            try:
+                key_btn.focus()
+            except Exception:
+                pass
+            await pilot.pause()
+            kbd.post_message(Button.Pressed(key_btn))
+            await pilot.pause()
+            assert "c" in inp.value
 
 
 class TestDesktopMinimize:

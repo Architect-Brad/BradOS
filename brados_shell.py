@@ -1565,7 +1565,9 @@ class LoginScreen(Screen):
             yield MobileSoftKeyboard(id="login-soft-kbd")
 
     def on_mount(self) -> None:
-        self.query_one("#usr", Input).focus()
+        usr = self.query_one("#usr", Input)
+        usr.focus()
+        self._soft_target = usr  # type: ignore[attr-defined]
         if is_mobile_display():
             self.add_class("mobile")
             try:
@@ -1574,52 +1576,10 @@ class LoginScreen(Screen):
             except NoMatches:
                 pass
 
-    @on(Button.Pressed, ".sk-key")
-    def _login_soft_key(self, event: Button.Pressed) -> None:
-        """Soft keyboard on login (username field)."""
-        bid = event.button.id or ""
-        event.stop()
-        try:
-            kbd = self.query_one(MobileSoftKeyboard)
-        except NoMatches:
-            kbd = None
-        if bid == "sk-hide":
-            if kbd:
-                kbd.set_visible(False)
-            return
-        if bid == "sk-shift":
-            if kbd:
-                if kbd._symbols:
-                    kbd._symbols = False
-                else:
-                    kbd._shift = not kbd._shift
-                kbd._rebuild()
-            return
-        if bid == "sk-sym":
-            if kbd:
-                kbd._symbols = not kbd._symbols
-                kbd._shift = False
-                kbd._rebuild()
-            return
-        if bid == "sk-back":
-            _inject_soft_key(self, "BACKSPACE")
-            return
-        if bid == "sk-space":
-            _inject_soft_key(self, " ")
-            return
-        if bid == "sk-enter":
-            self._go()
-            return
-        if bid.startswith("sk-ch-"):
-            try:
-                ch = chr(int(bid.split("-")[-1]))
-            except ValueError:
-                return
-            if kbd and kbd._shift and not kbd._symbols:
-                ch = ch.upper()
-                kbd._shift = False
-                kbd._rebuild()
-            _inject_soft_key(self, ch)
+    def on_descendant_focus(self, event) -> None:
+        w = event.widget if hasattr(event, "widget") else getattr(event, "control", None)
+        if isinstance(w, (Input, TextArea)):
+            self._soft_target = w  # type: ignore[attr-defined]
 
     @on(Input.Submitted, "#usr")
     def _enter(self) -> None:
@@ -1645,7 +1605,9 @@ class LoginScreen(Screen):
             try:
                 kbd = self.query_one("#login-soft-kbd", MobileSoftKeyboard)
                 kbd.set_visible(True)
-                self.query_one("#usr", Input).focus()
+                usr = self.query_one("#usr", Input)
+                self._soft_target = usr  # type: ignore[attr-defined]
+                usr.focus()
             except NoMatches:
                 pass
             return
@@ -2501,7 +2463,12 @@ class MobileAppNav(Horizontal):
 
 
 class MobileSoftKeyboard(Vertical):
-    """Compact QWERTY for focused Input / TextArea (mobile only)."""
+    """Compact QWERTY for focused Input / TextArea (mobile only).
+
+    Keys are non-focusable so tapping them does not steal focus from the
+    target field. Key handling lives here (not only on BradWindow) so
+    dynamically mounted buttons always fire.
+    """
 
     DEFAULT_CSS = """
     MobileSoftKeyboard {
@@ -2559,34 +2526,48 @@ class MobileSoftKeyboard(Vertical):
         self._shift = False
         self._symbols = False
         self._built = False
+        self.can_focus = False
 
     def on_mount(self) -> None:
         self._rebuild()
+
+    def _make_key(self, label: str, *, key_id: str, classes: str = "sk-key") -> Button:
+        btn = Button(label, id=key_id, classes=classes)
+        # Critical: do not steal focus from Input/TextArea on tap
+        btn.can_focus = False
+        return btn
 
     def _rebuild(self) -> None:
         self.remove_children()
         rows = self._ROWS_NUM if self._symbols else self._ROWS_ALPHA
         for row in rows:
             row_w = Horizontal(classes="sk-row")
-            keys = []
+            row_w.can_focus = False
+            self.mount(row_w)
             for ch in row:
                 label = ch.upper() if (self._shift and not self._symbols) else ch
-                keys.append(Button(label, classes="sk-key", id=f"sk-ch-{ord(ch)}"))
-            # pack via mount after compose-like construction
-            self.mount(row_w)
-            for k in keys:
-                row_w.mount(k)
+                # Encode the *display* character in the id so shift works
+                # without relying on button focus/label parsing.
+                display = label
+                row_w.mount(self._make_key(display, key_id=f"sk-lit-{ord(display)}"))
         # Control row
         ctrl = Horizontal(classes="sk-row")
+        ctrl.can_focus = False
         self.mount(ctrl)
         shift_lbl = "ABC" if self._symbols else ("⬆" if not self._shift else "⇧")
-        ctrl.mount(Button(shift_lbl, id="sk-shift", classes="sk-key sk-wide sk-special"))
-        ctrl.mount(Button("?123" if not self._symbols else "ABC",
-                          id="sk-sym", classes="sk-key sk-wide sk-special"))
-        ctrl.mount(Button("⌫", id="sk-back", classes="sk-key sk-wide sk-special"))
-        ctrl.mount(Button("␣", id="sk-space", classes="sk-key sk-space"))
-        ctrl.mount(Button("↵", id="sk-enter", classes="sk-key sk-wide sk-special"))
-        ctrl.mount(Button("⌘", id="sk-hide", classes="sk-key sk-special"))
+        ctrl.mount(self._make_key(shift_lbl, key_id="sk-shift",
+                                  classes="sk-key sk-wide sk-special"))
+        ctrl.mount(self._make_key("?123" if not self._symbols else "ABC",
+                                  key_id="sk-sym",
+                                  classes="sk-key sk-wide sk-special"))
+        ctrl.mount(self._make_key("⌫", key_id="sk-back",
+                                  classes="sk-key sk-wide sk-special"))
+        ctrl.mount(self._make_key("␣", key_id="sk-space",
+                                  classes="sk-key sk-space"))
+        ctrl.mount(self._make_key("↵", key_id="sk-enter",
+                                  classes="sk-key sk-wide sk-special"))
+        ctrl.mount(self._make_key("⌘", key_id="sk-hide",
+                                  classes="sk-key sk-special"))
         self._built = True
 
     def set_visible(self, visible: bool) -> None:
@@ -2602,23 +2583,131 @@ class MobileSoftKeyboard(Vertical):
         self.set_visible(show)
         return show
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle soft keys here so presses always reach injection logic."""
+        bid = event.button.id or ""
+        if not (bid.startswith("sk-") or bid.startswith("sk-lit-")):
+            return
+        event.stop()
+        screen = self.screen
+        if bid == "sk-hide":
+            self.set_visible(False)
+            _refocus_soft_target(screen)
+            return
+        if bid == "sk-shift":
+            if self._symbols:
+                self._symbols = False
+            else:
+                self._shift = not self._shift
+            self._rebuild()
+            _refocus_soft_target(screen)
+            return
+        if bid == "sk-sym":
+            self._symbols = not self._symbols
+            self._shift = False
+            self._rebuild()
+            _refocus_soft_target(screen)
+            return
+        if bid == "sk-back":
+            _inject_soft_key(screen, "BACKSPACE")
+            return
+        if bid == "sk-space":
+            _inject_soft_key(screen, " ")
+            return
+        if bid == "sk-enter":
+            # Login screen: Enter submits; elsewhere insert newline / Input submit
+            if screen.__class__.__name__ == "LoginScreen" and hasattr(screen, "_go"):
+                screen._go()  # type: ignore[attr-defined]
+            else:
+                _inject_soft_key(screen, "ENTER")
+            return
+        if bid.startswith("sk-lit-"):
+            try:
+                ch = chr(int(bid.split("-")[-1]))
+            except ValueError:
+                return
+            # One-shot shift for alpha mode
+            if self._shift and not self._symbols and ch.isalpha() and ch.isupper():
+                self._shift = False
+                # Rebuild after inject so the character is still upper once
+                _inject_soft_key(screen, ch)
+                self._rebuild()
+                _refocus_soft_target(screen)
+                return
+            _inject_soft_key(screen, ch)
+            return
+        # Legacy id form sk-ch-N (lowercase base char)
+        if bid.startswith("sk-ch-"):
+            try:
+                ch = chr(int(bid.split("-")[-1]))
+            except ValueError:
+                return
+            if self._shift and not self._symbols:
+                ch = ch.upper()
+                self._shift = False
+                _inject_soft_key(screen, ch)
+                self._rebuild()
+                _refocus_soft_target(screen)
+                return
+            _inject_soft_key(screen, ch)
+
+
+def _soft_target_widget(screen: Screen):
+    """Resolve the Input/TextArea that should receive soft-keyboard input."""
+    # 1) Explicitly remembered target (set on Focus)
+    target = getattr(screen, "_soft_target", None)
+    if isinstance(target, (Input, TextArea)) and target.is_mounted:
+        return target
+
+    # 2) Currently focused widget, if it's a text field
+    focus = getattr(screen, "focused", None)
+    if isinstance(focus, (Input, TextArea)):
+        return focus
+
+    # 3) App-level focused (sometimes differs while a Button was focused)
+    try:
+        app_focus = screen.app.focused
+        if isinstance(app_focus, (Input, TextArea)):
+            return app_focus
+    except Exception:
+        pass
+
+    # 4) First text field on the screen
+    try:
+        for node in screen.query(Input):
+            return node
+    except Exception:
+        pass
+    try:
+        for node in screen.query(TextArea):
+            return node
+    except Exception:
+        pass
+    return None
+
+
+def _refocus_soft_target(screen: Screen) -> None:
+    w = _soft_target_widget(screen)
+    if w is not None:
+        try:
+            w.focus()
+        except Exception:
+            pass
+
 
 def _inject_soft_key(screen: Screen, key: str) -> None:
-    """Insert a soft-keyboard key into the focused Input or TextArea."""
-    focus = screen.focused
+    """Insert a soft-keyboard key into the target Input or TextArea."""
+    focus = _soft_target_widget(screen)
     if focus is None:
-        # Fall back to any Input/TextArea on the screen
-        try:
-            focus = screen.query(Input).first()
-        except Exception:
-            try:
-                focus = screen.query(TextArea).first()
-            except Exception:
-                return
+        return
 
     if isinstance(focus, Input):
         val = focus.value or ""
-        pos = getattr(focus, "cursor_position", len(val))
+        try:
+            pos = int(focus.cursor_position)
+        except Exception:
+            pos = len(val)
+        pos = max(0, min(pos, len(val)))
         if key == "BACKSPACE":
             if pos > 0:
                 focus.value = val[: pos - 1] + val[pos:]
@@ -2630,14 +2719,20 @@ def _inject_soft_key(screen: Screen, key: str) -> None:
             try:
                 focus.action_submit()
             except Exception:
-                focus.post_message(Input.Submitted(focus, focus.value))
+                try:
+                    focus.post_message(Input.Submitted(focus, focus.value))
+                except Exception:
+                    # Fallback: notify parent screen of submit intent
+                    pass
         else:
             focus.value = val[:pos] + key + val[pos:]
             try:
                 focus.cursor_position = pos + len(key)
             except Exception:
                 pass
+        # Remember + restore focus so the next key still hits this field
         try:
+            screen._soft_target = focus  # type: ignore[attr-defined]
             focus.focus()
         except Exception:
             pass
@@ -2646,33 +2741,41 @@ def _inject_soft_key(screen: Screen, key: str) -> None:
     if isinstance(focus, TextArea):
         try:
             if key == "BACKSPACE":
-                focus.action_delete_left()
+                if hasattr(focus, "action_delete_left"):
+                    focus.action_delete_left()
+                else:
+                    text = focus.text or ""
+                    if text:
+                        focus.load_text(text[:-1]) if hasattr(focus, "load_text") else setattr(
+                            focus, "text", text[:-1]
+                        )
             elif key == "ENTER":
-                # Newline
                 if hasattr(focus, "insert"):
                     focus.insert("\n")
                 else:
-                    r, c = focus.cursor_location
-                    lines = focus.text.split("\n")
-                    line = lines[r] if r < len(lines) else ""
-                    lines[r] = line[:c] + "\n" + line[c:]
-                    # crude join — prefer insert API
-                    focus.text = "\n".join(lines)
+                    focus.text = (focus.text or "") + "\n"
             else:
                 if hasattr(focus, "insert"):
                     focus.insert(key)
                 else:
-                    r, c = focus.cursor_location
-                    lines = focus.text.splitlines() or [""]
+                    # Best-effort append when insert API is missing
+                    r, c = getattr(focus, "cursor_location", (0, 0))
+                    lines = (focus.text or "").split("\n") or [""]
                     while r >= len(lines):
                         lines.append("")
                     line = lines[r]
+                    c = max(0, min(c, len(line)))
                     lines[r] = line[:c] + key + line[c:]
-                    focus.text = "\n".join(lines)
+                    new_text = "\n".join(lines)
+                    if hasattr(focus, "load_text"):
+                        focus.load_text(new_text)
+                    else:
+                        focus.text = new_text
                     try:
                         focus.cursor_location = (r, c + len(key))
                     except Exception:
                         pass
+            screen._soft_target = focus  # type: ignore[attr-defined]
             focus.focus()
         except Exception:
             pass
@@ -2772,6 +2875,19 @@ class BradWindow(Screen):
         except NoMatches:
             return None
 
+    def on_descendant_focus(self, event) -> None:
+        """Remember the last Input/TextArea so soft keys still type after key taps."""
+        w = event.widget if hasattr(event, "widget") else getattr(event, "control", None)
+        if isinstance(w, (Input, TextArea)):
+            self._soft_target = w  # type: ignore[attr-defined]
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        # Keep target fresh while the user types (hardware or soft)
+        try:
+            self._soft_target = event.input  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     def action_mobile_back(self) -> None:
         """◀ Back — dismiss this app window."""
         self.dismiss()
@@ -2834,49 +2950,8 @@ class BradWindow(Screen):
     def _on_mnav_kbd(self, event: Button.Pressed) -> None:
         event.stop()
         self.action_mobile_toggle_kbd()
-
-    @on(Button.Pressed, ".sk-key")
-    def _on_soft_key(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        event.stop()
-        kbd = self._mobile_keyboard()
-        if bid == "sk-hide":
-            if kbd:
-                kbd.set_visible(False)
-            return
-        if bid == "sk-shift":
-            if kbd:
-                if kbd._symbols:
-                    kbd._symbols = False
-                else:
-                    kbd._shift = not kbd._shift
-                kbd._rebuild()
-            return
-        if bid == "sk-sym":
-            if kbd:
-                kbd._symbols = not kbd._symbols
-                kbd._shift = False
-                kbd._rebuild()
-            return
-        if bid == "sk-back":
-            _inject_soft_key(self, "BACKSPACE")
-            return
-        if bid == "sk-space":
-            _inject_soft_key(self, " ")
-            return
-        if bid == "sk-enter":
-            _inject_soft_key(self, "ENTER")
-            return
-        if bid.startswith("sk-ch-"):
-            try:
-                ch = chr(int(bid.split("-")[-1]))
-            except ValueError:
-                return
-            if kbd and kbd._shift and not kbd._symbols:
-                ch = ch.upper()
-                kbd._shift = False
-                kbd._rebuild()
-            _inject_soft_key(self, ch)
+        # Prefer focusing a text field after showing the keyboard
+        _refocus_soft_target(self)
 
     def dismiss(self, result=None) -> None:
         self.styles.animate("opacity", 0.0, duration=0.15)
