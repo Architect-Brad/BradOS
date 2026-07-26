@@ -162,9 +162,9 @@ BUILTIN_REGISTRY: list[dict] = [
 
 class PackageRegistry:
     """Curated package index.  Built-in packages are always available.
-    Optional remote registry can be fetched from a URL."""
+    Remote registry is fetched from GitHub and cached locally for offline use."""
 
-    REMOTE_URL   = "https://raw.githubusercontent.com/BradOS/registry/main/index.json"
+    REMOTE_URL   = "https://raw.githubusercontent.com/Architect-Brad/registry/main/index.json"
     CACHE_PATH   = os.path.join("brados_files", "bpkg", "registry_cache.json")
     CACHE_TTL    = 3600 * 6   # 6 hours
 
@@ -183,8 +183,6 @@ class PackageRegistry:
     def _load_builtin(self) -> None:
         for pkg_dict in BUILTIN_REGISTRY:
             pkg = Package.from_dict(pkg_dict)
-            # Builtins are reviewed alongside the source, so we auto-pin their
-            # checksum here rather than hand-computing it for every entry above.
             if pkg.install_script and not pkg.script_sha256:
                 pkg.script_sha256 = hashlib.sha256(
                     pkg.install_script.encode("utf-8")
@@ -203,8 +201,6 @@ class PackageRegistry:
                 data = json.load(f)
             for pkg_dict in data.get("packages", []):
                 pkg = Package.from_dict(pkg_dict)
-                # Never let a cached/remote entry shadow a builtin's trust status,
-                # even if it reuses the same package name.
                 if pkg.name in self._trusted:
                     logger.warning(
                         f"Registry cache package '{pkg.name}' collides with a "
@@ -221,7 +217,7 @@ class PackageRegistry:
         try:
             import requests        # type: ignore
             if progress:
-                progress("Fetching remote registry…")
+                progress("Fetching remote registry...")
             resp = requests.get(self.REMOTE_URL, timeout=10)
             resp.raise_for_status()
             data = resp.json()
