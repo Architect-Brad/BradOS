@@ -146,6 +146,15 @@ BUILTIN_REGISTRY: list[dict] = [
         "tags":        ["dev", "testing", "lint"],
         "size_kb":     8_000,
     },
+    {
+        "name":        "brad-carbonyl",
+        "version":     "0.0.3",
+        "description": "Full Chromium browser for BradOS — renders JS/CSS/video in terminal via Carbonyl",
+        "category":    "app",
+        "pip_deps":    [],
+        "tags":        ["browser", "chromium", "web", "carbonyl"],
+        "size_kb":     150_000,
+    },
 ]
 
 

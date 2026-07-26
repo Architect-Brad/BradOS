@@ -120,6 +120,237 @@ def html_to_text(html: str) -> str:
         return re.sub(r"<[^>]+>", " ", html).strip()
 
 
+# ── Rich-markup HTML → text (for BradBrowser TUI) ─────────────────────────
+
+class _RichHTMLParser(HTMLParser):
+    """Convert HTML to Rich-markup text with styled headings, links, and lists.
+
+    Produces Textual/Rich-compatible markup:
+      [bold]...[/bold]  for headings
+      [link=URL]text[/link]  for hyperlinks
+      [dim]...[/dim]  for metadata / footer content
+    """
+
+    _SKIP  = {"script", "style", "svg", "path", "noscript", "head"}
+    _BLOCK = {"p", "div", "article", "section", "main",
+              "li", "tr", "br", "hr", "blockquote", "pre"}
+    _HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._buf:        list[str] = []
+        self._skip_stack: list[str] = []
+        self._links:      list[tuple[str, str]] = []   # (display_text, href)
+        self._link_idx:   int = 0
+        self._in_link:    bool = False
+        self._link_href:  str = ""
+        self._link_text:  list[str] = []
+        self._list_depth: int = 0
+        self._list_counter: list[int] = []
+        self._in_heading: bool = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip_stack.append(tag)
+            return
+        if self._skip_stack:
+            return
+        attrs_d = dict(attrs)
+        if tag in self._BLOCK:
+            self._buf.append("\n")
+        if tag in self._HEADINGS:
+            self._buf.append("\n\n[bold]")
+            self._in_heading = True
+        if tag == "a":
+            href = attrs_d.get("href", "")
+            if href:
+                self._in_link = True
+                self._link_href = href
+                self._link_text = []
+        if tag in ("ul", "ol"):
+            self._list_depth += 1
+            if tag == "ol":
+                self._list_counter.append(1)
+            else:
+                self._list_counter.append(0)
+        if tag == "li":
+            indent = "  " * (self._list_depth - 1)
+            if self._list_counter and self._list_counter[-1] > 0:
+                num = self._list_counter[-1]
+                self._list_counter[-1] = num + 1
+                self._buf.append(f"\n{indent}{num}. ")
+            else:
+                self._buf.append(f"\n{indent}• ")
+        if tag == "pre":
+            self._buf.append("\n```\n")
+        if tag == "blockquote":
+            self._buf.append("\n> ")
+
+    def handle_endtag(self, tag):
+        if self._skip_stack and self._skip_stack[-1] == tag:
+            self._skip_stack.pop()
+            return
+        if self._skip_stack:
+            return
+        if tag == "a" and self._in_link:
+            self._in_link = False
+            display = "".join(self._link_text).strip()
+            if display and self._link_href:
+                self._link_idx += 1
+                self._links.append((display, self._link_href))
+                self._buf.append(f"[link={self._link_href}]{display}[/link]")
+            elif display:
+                self._buf.append(display)
+            self._link_text = []
+        if tag in self._HEADINGS:
+            self._buf.append("[/bold]\n")
+            self._in_heading = False
+        if tag in self._BLOCK:
+            self._buf.append("\n")
+        if tag == "pre":
+            self._buf.append("\n```\n")
+        if tag in ("ul", "ol"):
+            if self._list_counter:
+                self._list_counter.pop()
+            self._list_depth = max(0, self._list_depth - 1)
+            self._buf.append("\n")
+
+    def handle_data(self, data):
+        if self._skip_stack:
+            return
+        if self._in_link:
+            self._link_text.append(data)
+        else:
+            self._buf.append(data)
+
+    def result(self) -> tuple[str, list[tuple[str, str]]]:
+        text = "".join(self._buf)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        return text.strip(), self._links
+
+
+def html_to_rich(html: str) -> tuple[str, list[tuple[str, str]]]:
+    """Convert HTML to Rich-marked-up text + extracted links.
+
+    Returns (rendered_text, links) where links is a list of (display, href).
+    The rendered_text uses Rich/Textual markup for styled display.
+    Falls back to plain html_to_text on parse failure.
+    """
+    parser = _RichHTMLParser()
+    try:
+        parser.feed(html)
+        return parser.result()
+    except Exception:
+        return html_to_text(html), []
+
+
+def extract_links(html: str) -> list[tuple[str, str]]:
+    """Extract all hyperlinks from HTML. Returns [(display_text, href)]."""
+    _, links = html_to_rich(html)
+    return links
+
+
+# ── Readability-style article extraction ────────────────────────────────────
+
+class _ReadabilityParser(HTMLParser):
+    """Score HTML blocks by text density to extract the main article content.
+
+    Heavily inspired by Mozilla Readability. Strips nav, header, footer, aside,
+    ads, and other non-article content. Returns the cleanest content blocks.
+    """
+
+    _BOILERPLATE = {
+        "nav", "header", "footer", "aside", "form", "button",
+        "figcaption", "figure", "iframe", "noscript", "aside",
+    }
+    _SKIP = {"script", "style", "svg", "path", "head", "meta", "link"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip_stack: list[str] = []
+        self._blocks: list[tuple[int, str]] = []  # (score, text)
+        self._current_text: list[str] = []
+        self._depth: int = 0
+        self._boilerplate_depth: int = 0
+        self._text_len: int = 0
+        self._tag_len: int = 0
+
+    def handle_starttag(self, tag, attrs):
+        self._tag_len += 1
+        if tag in self._SKIP:
+            self._skip_stack.append(tag)
+            return
+        if self._skip_stack:
+            return
+        if tag in self._BOILERPLATE:
+            self._boilerplate_depth += 1
+        self._depth += 1
+
+    def handle_endtag(self, tag):
+        if self._skip_stack and self._skip_stack[-1] == tag:
+            self._skip_stack.pop()
+            return
+        if self._skip_stack:
+            return
+        self._depth = max(0, self._depth - 1)
+        if tag in self._BOILERPLATE:
+            self._boilerplate_depth = max(0, self._boilerplate_depth - 1)
+        # Score completed text blocks
+        text = "".join(self._current_text).strip()
+        if len(text) > 40:
+            words = len(text.split())
+            commas = text.count(",") + text.count(";")
+            density = (words + commas) / max(self._tag_len, 1)
+            score = words * density
+            if self._boilerplate_depth > 0:
+                score *= 0.2
+            if self._depth <= 3:
+                score *= 1.5
+            self._blocks.append((score, text))
+            self._current_text = []
+            self._text_len = 0
+            self._tag_len = 0
+
+    def handle_data(self, data):
+        if self._skip_stack or self._boilerplate_depth > 0:
+            return
+        self._current_text.append(data)
+        self._text_len += len(data)
+
+    def best_content(self) -> str:
+        if not self._blocks:
+            return ""
+        self._blocks.sort(key=lambda b: b[0], reverse=True)
+        top = self._blocks[:5]
+        seen = set()
+        result = []
+        for _, text in top:
+            short = text[:80]
+            if short not in seen:
+                seen.add(short)
+                result.append(text)
+        return "\n\n".join(result)
+
+
+def extract_article(html: str) -> str:
+    """Extract the main article content from an HTML page.
+
+    Uses readability-style scoring to find the best content blocks.
+    Returns plain text of the article content.
+    """
+    parser = _ReadabilityParser()
+    try:
+        parser.feed(html)
+        best = parser.best_content()
+        if best and len(best) > 100:
+            return best
+    except Exception:
+        pass
+    # Fallback to full text conversion
+    return html_to_text(html)
+
+
 # ── Safe mathematical evaluator ───────────────────────────────────────────────
 
 _ALLOWED_OPS = {
@@ -948,20 +1179,33 @@ def brad_browser():
             return "", [], f"Local page '{name}' not found."
         with open(path) as f:
             raw = f.read()
-        links = re.findall(r'href=["\']([^"\']+\.html?)["\']', raw)
-        return html_to_text(raw), links, None
+        _text, links = html_to_rich(raw)
+        hrefs = [href for _, href in links]
+        return html_to_text(raw), hrefs, None
 
     def do_fetch():
         nonlocal current_url, is_web
         if is_web:
             text, err = fetch_web(current_url)
+            # Extract links from web pages for numbered navigation
+            _links = []
+            try:
+                import requests
+                resp = requests.get(current_url, timeout=10,
+                                    headers={"User-Agent": "BradOS/3.0"})
+                ct = resp.headers.get("content-type", "")
+                if "html" in ct:
+                    _text, _links = html_to_rich(resp.text)
+            except Exception:
+                pass
+            return text or "", err, _links
         else:
             text, links, err = load_local(current_url)
-        return text or "", err
+            return text or "", err, links
 
     while True:
         print_header(f"BradBrowser — {current_url}", icon="app_browser")
-        text, err = do_fetch()
+        text, err, page_links = do_fetch()
         if err:
             print_status(err, "error")
             text = ""
@@ -971,6 +1215,14 @@ def brad_browser():
             print(f"  {line}")
         if len(lines) > term_h - 18:
             print(f"  … ({len(lines) - (term_h - 18)} more lines)")
+        # Show numbered links for quick navigation
+        if page_links:
+            print(f"\n  {FG.BRIGHT_CYAN}─── Links ───{Style.RESET}")
+            for i, href in enumerate(page_links[:10], 1):
+                short = href[:60] + ("…" if len(href) > 60 else "")
+                print(f"  {FG.BRIGHT_BLUE}{i}.{Style.RESET} {short}")
+            if len(page_links) > 10:
+                print(f"  {FG.DIM}… and {len(page_links) - 10} more{Style.RESET}")
         print_separator()
         print_menu_item("g", f"Go to URL  (web: {'on' if is_web else 'off'})", "network")
         print_menu_item("b", f"Bookmarks ({len(bookmarks)})", "app_browser")
@@ -987,8 +1239,16 @@ def brad_browser():
         elif ch == "r":
             pass   # just re-renders
         elif ch == "g":
-            url = input("  URL: ").strip()
+            url = input("  URL (or number to follow link): ").strip()
             if url:
+                if url.isdigit() and page_links:
+                    idx = int(url) - 1
+                    if 0 <= idx < len(page_links):
+                        url = page_links[idx]
+                    else:
+                        print_status("Invalid link number.", "error")
+                        time.sleep(0.8)
+                        continue
                 is_web = is_web_url(url)
                 current_url = url
                 history.append(url)

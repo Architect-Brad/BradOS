@@ -40,7 +40,7 @@ from brados_system import (
     backup_user_profiles,
 )
 from brados_apps import (
-    safe_eval, html_to_text, init_dirs, BRADOS_BROWSER_DIR,
+    safe_eval, html_to_text, html_to_rich, init_dirs, BRADOS_BROWSER_DIR,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -1499,8 +1499,10 @@ class BrowserScreen(Screen):
                                     headers={"User-Agent": "BradOS/2.0"})
                 resp.raise_for_status()
                 ct = resp.headers.get("content-type", "")
-                return (html_to_text(resp.text) if "html" in ct
-                        else f"[Binary content: {ct}]",
+                if "html" in ct:
+                    rendered, _links = html_to_rich(resp.text)
+                    return rendered, f"[#22c55e]✓  {resp.status_code}  {url}[/]"
+                return (f"[Binary content: {ct}]",
                         f"[#22c55e]✓  {resp.status_code}  {url}[/]")
             except ImportError:
                 return ("requests not installed.\nRun: pip install requests",
@@ -1514,7 +1516,8 @@ class BrowserScreen(Screen):
                                      url if url.endswith(".html") else url + ".html")
             if os.path.exists(page_file):
                 with open(page_file) as f:
-                    return html_to_text(f.read()), f"[#22c55e]✓  local:{url}[/]"
+                    rendered, _links = html_to_rich(f.read())
+                    return rendered, f"[#22c55e]✓  local:{url}[/]"
             return (f"Local page '{url}' not found.\nTip: switch to Web mode.",
                     f"[#ef4444]✗  not found[/]")
 

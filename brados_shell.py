@@ -52,7 +52,7 @@ from brados_system import (
     atomic_write_json, USER_PROFILES_DIR, BRADOS_FILES_DIR,
     load_config, save_config, resolve_theme, THEMES,
 )
-from brados_apps import safe_eval, html_to_text, init_dirs
+from brados_apps import safe_eval, html_to_text, html_to_rich, extract_article, init_dirs
 from brados_vfs import create_default_vfs, VirtualFileSystem
 from brados_drivers import create_default_registry, DriverRegistry, NetworkDriver
 from brados_security import (
@@ -3068,14 +3068,22 @@ class BrowserWindow(BradWindow):
     APP_ID: ClassVar[str] = "browser"
     SHOW_MOBILE_KEYBOARD: ClassVar[bool] = True
     BINDINGS: ClassVar = [
-        Binding("escape",   "dismiss",  "Close"),
-        Binding("ctrl+t",   "new_tab",  "New Tab"),
-        Binding("ctrl+w",   "close_tab","Close Tab"),
-        Binding("ctrl+l",   "focus_url","Address Bar"),
+        Binding("escape",   "dismiss",    "Close"),
+        Binding("ctrl+t",   "new_tab",    "New Tab"),
+        Binding("ctrl+w",   "close_tab",  "Close Tab"),
+        Binding("ctrl+l",   "focus_url",  "Address Bar"),
+        Binding("alt+left", "history_back","Back"),
+        Binding("alt+right","history_fwd", "Forward"),
+        Binding("ctrl+f",   "page_search", "Find"),
     ]
 
     _tab_count: int = 0
     _tab_urls:  dict[str, str] = {}
+    _tab_history: dict[str, list[str]] = {}
+    _tab_history_idx: dict[str, int] = {}
+    _tab_links: dict[str, list[tuple[str, str]]] = {}
+    _tab_search: dict[str, str] = {}
+    _has_carbonyl: bool = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="win-titlebar"):
@@ -3087,16 +3095,20 @@ class BrowserWindow(BradWindow):
 
         with Horizontal(id="browser-nav"):
             yield Button("←", id="btn-back-hist")
+            yield Button("→", id="btn-fwd-hist")
             yield Button("⟳", id="btn-reload")
             yield Input(placeholder="https://…  or  local page name", id="browser-url")
             yield Button("▶ Go", id="btn-go", classes="btn-primary")
-            yield Button("🌐", id="btn-web-mode")
+            yield Button("🔍", id="btn-search")
+            carbonyl_label = "🌐 Full" if self._has_carbonyl else "🌐 Install"
+            yield Button(carbonyl_label, id="btn-carbonyl")
 
         yield TabbedContent(id="browser-tabs")
 
-        yield Static("Ready", id="browser-status")
+        yield Static("Ready — enter a URL or type a number to follow a link", id="browser-status")
 
     def on_mount(self) -> None:
+        self._has_carbonyl = shutil.which("carbonyl") is not None
         self.action_new_tab()
 
     # ── Tab management ─────────────────────────────────────────────────────
@@ -3104,8 +3116,12 @@ class BrowserWindow(BradWindow):
     def action_new_tab(self) -> None:
         self._tab_count += 1
         tab_id  = f"tab-{self._tab_count}"
-        tab_lbl = f"New Tab {self._tab_count}"
+        tab_lbl = f"Tab {self._tab_count}"
         self._tab_urls[tab_id] = ""
+        self._tab_history[tab_id] = []
+        self._tab_history_idx[tab_id] = -1
+        self._tab_links[tab_id] = []
+        self._tab_search[tab_id] = ""
         tc = self.query_one("#browser-tabs", TabbedContent)
         tc.add_pane(TabPane(tab_lbl, self._make_tab_content(tab_id), id=tab_id))
 
@@ -3115,6 +3131,10 @@ class BrowserWindow(BradWindow):
         if active and self._tab_count > 1:
             tc.remove_pane(active)
             self._tab_urls.pop(active, None)
+            self._tab_history.pop(active, None)
+            self._tab_history_idx.pop(active, None)
+            self._tab_links.pop(active, None)
+            self._tab_search.pop(active, None)
 
     def action_focus_url(self) -> None:
         self.query_one("#browser-url", Input).focus()
@@ -3124,7 +3144,8 @@ class BrowserWindow(BradWindow):
             ScrollableContainer(
                 Static(
                     "[#7f8c8d]Enter a URL above and press ▶ Go.[/]\n\n"
-                    "[#1e3a5f]Ctrl+T  New tab    Ctrl+W  Close tab    Ctrl+L  Focus URL bar[/]",
+                    "[#1e3a5f]Ctrl+T  New tab · Ctrl+W  Close tab · Ctrl+L  Address bar\n"
+                    "Alt+←  Back · Alt+→  Forward · Ctrl+F  Find in page[/]",
                     id=f"content-{tab_id}",
                     classes="browser-content",
                 ),
@@ -3132,38 +3153,140 @@ class BrowserWindow(BradWindow):
             )
         )
 
+    # ── History navigation ─────────────────────────────────────────────────
+
+    def action_history_back(self) -> None:
+        tc = self.query_one("#browser-tabs", TabbedContent)
+        tab_id = tc.active
+        if not tab_id:
+            return
+        idx = self._tab_history_idx.get(tab_id, -1)
+        hist = self._tab_history.get(tab_id, [])
+        if idx > 0:
+            self._tab_history_idx[tab_id] = idx - 1
+            url = hist[idx - 1]
+            self.query_one("#browser-url", Input).value = url
+            self._fetch_and_render(url, tab_id, self._short_label(url))
+
+    def action_history_fwd(self) -> None:
+        tc = self.query_one("#browser-tabs", TabbedContent)
+        tab_id = tc.active
+        if not tab_id:
+            return
+        idx = self._tab_history_idx.get(tab_id, -1)
+        hist = self._tab_history.get(tab_id, [])
+        if idx < len(hist) - 1:
+            self._tab_history_idx[tab_id] = idx + 1
+            url = hist[idx + 1]
+            self.query_one("#browser-url", Input).value = url
+            self._fetch_and_render(url, tab_id, self._short_label(url))
+
+    def _push_history(self, tab_id: str, url: str) -> None:
+        hist = self._tab_history.setdefault(tab_id, [])
+        idx = self._tab_history_idx.get(tab_id, -1)
+        # Truncate forward history when navigating to a new page
+        if idx < len(hist) - 1:
+            self._tab_history[tab_id] = hist[:idx + 1]
+        self._tab_history[tab_id].append(url)
+        self._tab_history_idx[tab_id] = len(self._tab_history[tab_id]) - 1
+
+    # ── In-page search ─────────────────────────────────────────────────────
+
+    def action_page_search(self) -> None:
+        tc = self.query_one("#browser-tabs", TabbedContent)
+        tab_id = tc.active
+        if not tab_id:
+            return
+        url = self.query_one("#browser-url", Input).value.strip()
+        if not url:
+            return
+        # Toggle search: if already searching, cycle to next match
+        current = self._tab_search.get(tab_id, "")
+        if current:
+            self.query_one("#browser-url", Input).value = f"/{current}"
+            self.query_one("#browser-url", Input).focus()
+        else:
+            self.query_one("#browser-url", Input).value = "/"
+            self.query_one("#browser-url", Input).focus()
+
+    def _highlight_search(self, text: str, query: str) -> str:
+        """Wrap matches in [reverse] markup for visibility."""
+        if not query:
+            return text
+        safe = re.escape(query)
+        return re.sub(
+            safe,
+            lambda m: f"[reverse]{m.group()}[/reverse]",
+            text,
+            flags=re.IGNORECASE,
+        )
+
     # ── Navigation ─────────────────────────────────────────────────────────
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
-        if bid == "btn-close":      self.dismiss(); return
-        if bid == "btn-new-tab":    self.action_new_tab(); return
-        if bid == "btn-close-tab":  self.action_close_tab(); return
-        if bid == "btn-go":         self._navigate(); return
-        if bid == "btn-reload":     self._navigate(); return
+        if bid == "btn-close":       self.dismiss(); return
+        if bid == "btn-new-tab":     self.action_new_tab(); return
+        if bid == "btn-close-tab":   self.action_close_tab(); return
+        if bid == "btn-go":          self._navigate(); return
+        if bid == "btn-reload":      self._navigate(); return
+        if bid == "btn-back-hist":   self.action_history_back(); return
+        if bid == "btn-fwd-hist":    self.action_history_fwd(); return
+        if bid == "btn-search":      self.action_page_search(); return
+        if bid == "btn-carbonyl":    self._open_carbonyl(); return
 
     @on(Input.Submitted, "#browser-url")
     def _on_url_enter(self) -> None:
         self._navigate()
 
     def _navigate(self) -> None:
-        url = self.query_one("#browser-url", Input).value.strip()
-        if not url:
+        raw = self.query_one("#browser-url", Input).value.strip()
+        if not raw:
             return
         tc     = self.query_one("#browser-tabs", TabbedContent)
         tab_id = tc.active
         if not tab_id:
             return
-        self._tab_urls[tab_id] = url
-        label  = self._short_label(url)
-        self._fetch_and_render(url, tab_id, label)
+
+        # Handle in-page search
+        if raw.startswith("/"):
+            query = raw[1:].strip()
+            self._tab_search[tab_id] = query
+            content = self.query_one(f"#content-{tab_id}", Static)
+            if query:
+                highlighted = self._highlight_search(str(content.renderable), query)
+                content.update(highlighted)
+                self.query_one("#browser-status", Static).update(
+                    f"[#ffa502]🔍  Search: {query}[/]"
+                )
+            else:
+                self._tab_search[tab_id] = ""
+                self._navigate()  # re-render to clear highlights
+            return
+
+        # Handle numbered link navigation
+        links = self._tab_links.get(tab_id, [])
+        if raw.isdigit() and links:
+            idx = int(raw) - 1
+            if 0 <= idx < len(links):
+                url = links[idx][1]
+                self.query_one("#browser-url", Input).value = url
+                self._tab_urls[tab_id] = url
+                self._push_history(tab_id, url)
+                self._fetch_and_render(url, tab_id, self._short_label(url))
+                return
+
+        # Normal URL navigation
+        self._tab_urls[tab_id] = raw
+        self._push_history(tab_id, raw)
+        self._fetch_and_render(raw, tab_id, self._short_label(raw))
 
     @staticmethod
     def _short_label(url: str) -> str:
         url = re.sub(r"^https?://", "", url)
         return url[:20] + ("…" if len(url) > 20 else "")
 
-    @work(exclusive=True)          # cancels any in-flight fetch automatically
+    @work(exclusive=True)
     async def _fetch_and_render(self, url: str, tab_id: str, label: str) -> None:
         try:
             self.query_one("#browser-status", Static).update(
@@ -3172,26 +3295,47 @@ class BrowserWindow(BradWindow):
         except NoMatches:
             return
 
-        # All blocking I/O in the thread pool; we return to the main loop after.
-        rendered, status = await asyncio.to_thread(self._do_fetch, url)
+        rendered, links, status = await asyncio.to_thread(self._do_fetch, url)
 
-        escaped = rendered[:10_000].replace("[", "\\[")
+        # Store links for numbered navigation
+        self._tab_links[tab_id] = links
+
+        # Apply in-page search highlight if active
+        query = self._tab_search.get(tab_id, "")
+        if query:
+            rendered = self._highlight_search(rendered, query)
+            rendered += f"\n\n[#ffa502]🔍  Search: {query} — press Ctrl+F for next match[/]"
+
+        # Append link reference list
+        if links:
+            link_lines = ["\n\n[#1e3a5f]─── Links ───[/]"]
+            for i, (text, href) in enumerate(links[:20], 1):
+                short_text = text[:50] + ("…" if len(text) > 50 else "")
+                link_lines.append(f"[#5dade2]  {i}.[/] {short_text}")
+            if len(links) > 20:
+                link_lines.append(f"[#7f8c8d]  … and {len(links) - 20} more links[/]")
+            link_lines.append("[#7f8c8d]  Type a number to follow a link[/]")
+            rendered += "\n".join(link_lines)
+
         try:
-            self.query_one(f"#content-{tab_id}", Static).update(escaped)
+            self.query_one(f"#content-{tab_id}", Static).update(rendered)
             self.query_one("#browser-status",    Static).update(status)
         except NoMatches:
             pass
 
-    def _do_fetch(self, url: str) -> tuple[str, str]:
-        """Blocking network/VFS fetch — runs in thread pool."""
+    def _do_fetch(self, url: str) -> tuple[str, list[tuple[str, str]], str]:
+        """Blocking network/VFS fetch — runs in thread pool.
+        Returns (rendered_text, links, status_markup)."""
         if not url.startswith(("http://", "https://")):
             vpath = f"/home/{url}" if not url.startswith("/") else url
             try:
                 text   = self.app.vfs.read_text(vpath)
-                return html_to_text(text), f"[#2ed573]✓  local:{url}[/]"
+                rendered, links = html_to_rich(text)
+                return rendered, links, f"[#2ed573]✓  local:{url}[/]"
             except Exception as e:
                 return (f"Local page not found: {e}\n\n"
                         f"Tip: prefix with https:// for web pages.",
+                        [],
                         f"[#ff4757]✗  {e}[/]")
         try:
             net = self.app.drivers.get(NetworkDriver) if self.app.drivers else None
@@ -3205,12 +3349,139 @@ class BrowserWindow(BradWindow):
                     headers = dict(r.headers)
                     body    = r.read()
             ct = headers.get("content-type", headers.get("Content-Type", ""))
-            rendered = (html_to_text(body.decode(errors="replace"))
-                        if "html" in ct else body.decode(errors="replace"))
-            return rendered, f"[#2ed573]✓  HTTP {code}  {url}[/]"
+            raw = body.decode(errors="replace")
+            if "html" in ct:
+                rendered, links = html_to_rich(raw)
+            else:
+                rendered, links = raw, []
+            return rendered, links, f"[#2ed573]✓  HTTP {code}  {url}[/]"
         except Exception as e:
             return (f"Error: {e}\n\npip install requests  for better HTTPS support.",
+                    [],
                     f"[#ff4757]✗  {e}[/]")
+
+    # ── Carbonyl integration ───────────────────────────────────────────────
+
+    def _open_carbonyl(self) -> None:
+        """Launch Carbonyl full browser as subprocess, or offer to install it."""
+        if not self._has_carbonyl:
+            # Offer to install
+            try:
+                self.query_one("#browser-status", Static).update(
+                    "[#ffa502]⟳  Installing Carbonyl (full browser)...[/]"
+                )
+            except NoMatches:
+                return
+            self._install_carbonyl()
+            return
+        tc = self.query_one("#browser-tabs", TabbedContent)
+        tab_id = tc.active
+        url = self._tab_urls.get(tab_id, "") if tab_id else ""
+        if not url:
+            url = "https://wikipedia.org"
+        # Suspend Textual and launch Carbonyl
+        self.app.push_screen(_CarbonylScreen(url))
+
+    @work(exclusive=True)
+    async def _install_carbonyl(self) -> None:
+        """Install Carbonyl via bpkg or pkg in a background thread."""
+        import asyncio as _aio
+        def _run_install() -> tuple[bool, str]:
+            try:
+                # Try Termux pkg first
+                r = subprocess.run(
+                    ["pkg", "install", "-y", "carbonyl"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if r.returncode == 0:
+                    return True, "Carbonyl installed successfully"
+                # Try bpkg
+                r2 = subprocess.run(
+                    ["bpkg", "install", "brad-carbonyl"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if r2.returncode == 0:
+                    return True, "Carbonyl installed via bpkg"
+                return False, f"Install failed: {r.stderr[:200]}"
+            except FileNotFoundError:
+                return False, "Neither pkg nor bpkg found"
+            except subprocess.TimeoutExpired:
+                return False, "Install timed out"
+            except Exception as e:
+                return False, str(e)
+
+        ok, msg = await _aio.to_thread(_run_install)
+        try:
+            if ok:
+                self._has_carbonyl = shutil.which("carbonyl") is not None
+                self.query_one("#browser-status", Static).update(
+                    f"[#2ed573]✓  {msg}[/]"
+                )
+            else:
+                self.query_one("#browser-status", Static).update(
+                    f"[#ff4757]✗  {msg}[/]"
+                )
+        except NoMatches:
+            pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CARBONYL FULL BROWSER SCREEN (subprocess wrapper)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class _CarbonylScreen(Screen):
+    """Screen that launches Carbonyl as a subprocess and returns on exit."""
+
+    CSS = """
+    _CarbonylScreen {
+        background: #000;
+    }
+    #carb-status {
+        dock: bottom;
+        height: 1;
+        background: #1e3a5f;
+        color: #ecf0f1;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, url: str = "https://wikipedia.org"):
+        super().__init__()
+        self._url = url
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"[#ffa502]Launching Carbonyl: {self._url}[/]\n"
+            "[#7f8c8d]Press any key to return to BradOS when done[/]",
+            id="carb-info",
+        )
+        yield Static("Starting...", id="carb-status")
+
+    def on_mount(self) -> None:
+        self._run_carbonyl()
+
+    @work(exclusive=True)
+    async def _run_carbonyl(self) -> None:
+        import asyncio as _aio
+        def _run() -> int:
+            try:
+                return subprocess.call(["carbonyl", self._url])
+            except FileNotFoundError:
+                return 127
+            except Exception:
+                return 1
+
+        rc = await _aio.to_thread(_run)
+        try:
+            self.query_one("#carb-status", Static).update(
+                f"[#2ed573]Carbonyl exited (code {rc}). Press any key to return.[/]"
+            )
+        except NoMatches:
+            pass
+
+    def on_key(self, event) -> None:
+        self.dismiss()
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

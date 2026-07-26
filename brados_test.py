@@ -1597,5 +1597,125 @@ class TestVaultXorWarning:
             assert "NOT cryptographically secure" in str(w[0].message)
             assert issubclass(w[0].category, UserWarning)
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v", "--tb=short"]))
+
+# ════════════════════════════════════════════════════════════════
+# BROWSER v2 TESTS
+# ════════════════════════════════════════════════════════════════
+
+class TestHtmlToRich:
+    """Tests for the upgraded Rich-markup HTML parser."""
+
+    def test_basic_paragraph(self):
+        from brados_apps import html_to_rich
+        text, links = html_to_rich("<p>Hello world</p>")
+        assert "Hello world" in text
+        assert links == []
+
+    def test_heading_bold(self):
+        from brados_apps import html_to_rich
+        text, _ = html_to_rich("<h1>Title</h1><p>Body</p>")
+        assert "[bold]" in text
+        assert "Title" in text
+
+    def test_links_extracted(self):
+        from brados_apps import html_to_rich
+        text, links = html_to_rich(
+            '<a href="https://example.com">Example</a> and '
+            '<a href="https://test.com">Test</a>'
+        )
+        assert len(links) == 2
+        assert links[0] == ("Example", "https://example.com")
+        assert links[1] == ("Test", "https://test.com")
+        assert "[link=" in text
+
+    def test_skip_script_and_style(self):
+        from brados_apps import html_to_rich
+        text, _ = html_to_rich(
+            "<head><style>body{color:red}</style></head>"
+            "<body><p>Visible</p></body>"
+        )
+        assert "Visible" in text
+        assert "color" not in text
+
+    def test_lists(self):
+        from brados_apps import html_to_rich
+        text, _ = html_to_rich("<ul><li>One</li><li>Two</li></ul>")
+        assert "•" in text
+        assert "One" in text
+        assert "Two" in text
+
+    def test_ordered_list(self):
+        from brados_apps import html_to_rich
+        text, _ = html_to_rich("<ol><li>First</li><li>Second</li></ol>")
+        assert "1." in text
+        assert "2." in text
+
+    def test_fallback_on_bad_html(self):
+        from brados_apps import html_to_rich
+        text, links = html_to_rich("<<<broken>>>")
+        assert isinstance(text, str)
+        assert isinstance(links, list)
+
+
+class TestExtractArticle:
+    """Tests for readability-style article extraction."""
+
+    def test_extracts_main_content(self):
+        from brados_apps import extract_article
+        html = """
+        <html><body>
+        <nav>Navigation bar with lots of links</nav>
+        <header>Site header</header>
+        <article>
+        <p>This is the main article content with enough words to be
+        detected as the primary content block on the page. It contains
+        multiple sentences and provides real value to the reader.</p>
+        </article>
+        <footer>Copyright 2024</footer>
+        </body></html>
+        """
+        result = extract_article(html)
+        assert "main article content" in result
+
+    def test_fallback_to_full_text(self):
+        from brados_apps import extract_article
+        result = extract_article("<p>Short</p>")
+        assert "Short" in result
+
+    def test_strips_scripts(self):
+        from brados_apps import extract_article
+        html = "<p>Good</p><script>evil()</script><p>content</p>"
+        result = extract_article(html)
+        assert "evil" not in result
+
+
+class TestExtractLinks:
+    """Tests for the extract_links helper."""
+
+    def test_finds_all_links(self):
+        from brados_apps import extract_links
+        html = '<a href="/a">A</a><a href="/b">B</a>'
+        links = extract_links(html)
+        assert len(links) == 2
+
+    def test_no_links(self):
+        from brados_apps import extract_links
+        links = extract_links("<p>No links here</p>")
+        assert links == []
+
+
+class TestBpkgRegistry:
+    """Test that brad-carbonyl is in the registry."""
+
+    def test_carbonyl_in_registry(self):
+        from brados_bpkg import BUILTIN_REGISTRY
+        names = [p["name"] for p in BUILTIN_REGISTRY]
+        assert "brad-carbonyl" in BUILTIN_REGISTRY[0] or \
+               any(n == "brad-carbonyl" for n in names)
+
+    def test_carbonyl_package_details(self):
+        from brados_bpkg import BUILTIN_REGISTRY
+        pkg = next(p for p in BUILTIN_REGISTRY if p["name"] == "brad-carbonyl")
+        assert pkg["version"] == "0.0.3"
+        assert "chromium" in pkg["tags"]
+        assert "browser" in pkg["tags"]

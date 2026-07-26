@@ -717,6 +717,19 @@ class BrashShell:
         self._exit_requested = True
         return ""
 
+    def _cmd_browse(self, args: list[str], **kw) -> str:
+        """browse [URL] — open in BradBrowser. browse --full [URL] — open in Carbonyl."""
+        import shutil as _shutil
+        if args and args[0] == "--full":
+            url = args[1] if len(args) > 1 else "https://wikipedia.org"
+            if not _shutil.which("carbonyl"):
+                return "[#ff4757]Carbonyl not installed. Run: bpkg install brad-carbonyl[/]"
+            import subprocess as _sp
+            _sp.call(["carbonyl", url])
+            return ""
+        url = args[0] if args else ""
+        return f"[#5dade2]Opening BradBrowser:[/] {url}" if url else "[#5dade2]Opening BradBrowser…[/]"
+
     def _cmd_help(self, args: list[str], **kw) -> str:
         lines = ["[bold #00d4ff]Brash — Built-in commands:[/]"]
         items = [
@@ -732,6 +745,7 @@ class BrashShell:
             ("mv <src> <dst>","Move/rename file"),
             ("ps",           "List running processes"),
             ("env",          "Print environment variables"),
+            ("browse [url]", "Open BradBrowser (--full for Carbonyl)"),
             ("alias [n=cmd]","Create/list aliases (no args: list all)"),
             ("unalias <n>",  "Remove an alias"),
             ("exit",         "Exit the shell"),
