@@ -223,8 +223,12 @@ class _MemNode:
 
 
 class MemFSDriver(VFSDriver):
-    """In-memory filesystem.  Fast, volatile — contents lost on shutdown.
-    Useful for /tmp or kernel-internal scratch space."""
+    """In-memory filesystem with optional disk persistence via snapshot.
+
+    Volatile by default — contents lost on shutdown unless snapshot/restore
+    is used.  Useful for /tmp, kernel scratch space, or the root mount when
+    persistence is desired.
+    """
 
     name = "memfs"
 
@@ -317,6 +321,87 @@ class MemFSDriver(VFSDriver):
             node      = src_parent.children.pop(src_name)
             node.name = dst_name
             dst_parent.children[dst_name] = node
+
+    # ── Snapshot / Restore (persistence) ──────────────────────────────────
+
+    def _node_to_dict(self, node: _MemNode) -> dict:
+        d = {
+            "n": node.name,
+            "t": node.type,
+            "m": node.mode,
+            "u": node.uid,
+            "at": node.atime,
+            "mt": node.mtime,
+            "ct": node.ctime,
+        }
+        if node.type == NT.FILE:
+            d["d"] = bytes(node.data)
+        elif node.children:
+            d["c"] = {k: self._node_to_dict(v) for k, v in node.children.items()}
+        return d
+
+    def _dict_to_node(self, d: dict) -> _MemNode:
+        node = _MemNode(
+            name  = d["n"],
+            type  = d["t"],
+            mode  = d.get("m", DEFAULT_FILE_MODE),
+            uid   = d.get("u", 1000),
+            atime = d.get("at", 0),
+            mtime = d.get("mt", 0),
+            ctime = d.get("ct", 0),
+        )
+        if node.type == NT.FILE and "d" in d:
+            node.data = bytearray(d["d"])
+        if "c" in d:
+            node.children = {k: self._dict_to_node(v) for k, v in d["c"].items()}
+        return node
+
+    def snapshot(self, path: str) -> None:
+        """Serialize the entire in-memory tree to a JSON file.
+
+        Binary data is stored as base64.  Thread-safe.
+        """
+        import base64 as _b64
+        with self._lock:
+            tree = self._node_to_dict(self._root)
+        # Encode binary data as base64 for JSON compatibility
+        def _encode(obj):
+            if isinstance(obj, dict):
+                return {k: _encode(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_encode(v) for v in obj]
+            if isinstance(obj, bytes):
+                return {"__b64__": _b64.b64encode(obj).decode()}
+            return obj
+        encoded = _encode(tree)
+        tmp = path + ".tmp"
+        Path(tmp).write_text(json.dumps(encoded, separators=(",", ":")))
+        os.replace(tmp, path)
+
+    def restore(self, path: str) -> bool:
+        """Load a previously-saved snapshot.  Returns True on success.
+
+        Replaces the current in-memory tree entirely.
+        """
+        import base64 as _b64
+        if not os.path.exists(path):
+            return False
+        try:
+            encoded = json.loads(Path(path).read_text())
+            def _decode(obj):
+                if isinstance(obj, dict):
+                    if "__b64__" in obj and len(obj) == 1:
+                        return _b64.b64decode(obj["__b64__"])
+                    return {k: _decode(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_decode(v) for v in obj]
+                return obj
+            tree = _decode(encoded)
+            with self._lock:
+                self._root = self._dict_to_node(tree)
+            return True
+        except Exception:
+            return False
 
 
 # ── Pipe-backed file handler (bridges VFS to subprocess pipes / IO objects) ──
@@ -816,14 +901,47 @@ class VirtualFileSystem:
         for d in dirs:
             yield from self.walk(top.rstrip("/") + "/" + d, caller_pid=caller_pid)
 
+    # ── Snapshot / Restore (cross-restart persistence) ────────────────────
+
+    def snapshot(self, path: str, mount: str = "/") -> bool:
+        """Save a MemFSDriver's contents to disk.  Returns True on success.
+
+        Only works for MemFSDriver-backed mounts.  The root mount "/" is
+        the default target.
+        """
+        driver, _ = self._route(mount)
+        if not isinstance(driver, MemFSDriver):
+            return False
+        try:
+            driver.snapshot(path)
+            return True
+        except Exception:
+            return False
+
+    def restore(self, path: str, mount: str = "/") -> bool:
+        """Load a previously-saved snapshot into a MemFSDriver mount.
+
+        Only works for MemFSDriver-backed mounts.
+        """
+        driver, _ = self._route(mount)
+        if not isinstance(driver, MemFSDriver):
+            return False
+        return driver.restore(path)
+
 
 # ── Factory: create a default-layout BradOS VFS ───────────────────────────────
 
 def create_default_vfs(
     home_root:  str = "brados_files",
     kernel=None,
+    snapshot_path: str | None = None,
 ) -> VirtualFileSystem:
-    """Mount the standard BradOS filesystem layout and return a ready VFS."""
+    """Mount the standard BradOS filesystem layout and return a ready VFS.
+
+    If snapshot_path is provided, attempts to restore the root MemFSDriver
+    from a previously saved snapshot.  Call vfs.snapshot(snapshot_path) on
+    shutdown to persist state across restarts.
+    """
     vfs = VirtualFileSystem()
 
     # Root: in-memory (small overhead, survives driver errors)
@@ -845,5 +963,9 @@ def create_default_vfs(
             vfs.makedirs(path)
         except Exception:
             pass
+
+    # Restore root filesystem from snapshot if available
+    if snapshot_path:
+        vfs.restore(snapshot_path, mount="/")
 
     return vfs

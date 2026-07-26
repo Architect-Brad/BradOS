@@ -108,6 +108,37 @@ class TestVFS:
         paths = list(self.vfs.walk("/home/testuser/walk"))
         assert len(paths) >= 1
 
+    def test_snapshot_restore(self):
+        import os, tempfile, shutil
+        self.vfs.write_text("/tmp/snap_test.txt", "persist me")
+        self.vfs.makedirs("/tmp/snap_dir")
+        self.vfs.write_text("/tmp/snap_dir/nested.txt", "nested data")
+        snap = os.path.join(tempfile.mkdtemp(), "snap.json")
+        assert self.vfs.snapshot(snap, mount="/tmp")
+        # Wipe and restore
+        from brados_vfs import MemFSDriver
+        self.vfs._mounts["/tmp"] = MemFSDriver()
+        assert not self.vfs.exists("/tmp/snap_test.txt")
+        assert self.vfs.restore(snap, mount="/tmp")
+        assert self.vfs.read_text("/tmp/snap_test.txt") == "persist me"
+        assert self.vfs.read_text("/tmp/snap_dir/nested.txt") == "nested data"
+        shutil.rmtree(os.path.dirname(snap))
+
+    def test_snapshot_bad_mount(self):
+        assert not self.vfs.snapshot("/tmp/should_fail.json", mount="/home")
+        assert not self.vfs.restore("/tmp/should_fail.json", mount="/home")
+
+    def test_snapshot_roundtrip_binary(self):
+        import os, tempfile, shutil
+        self.vfs.write("/tmp/bin_test.dat", bytes(range(256)))
+        snap = os.path.join(tempfile.mkdtemp(), "bin_snap.json")
+        self.vfs.snapshot(snap, mount="/tmp")
+        from brados_vfs import MemFSDriver
+        self.vfs._mounts["/tmp"] = MemFSDriver()
+        self.vfs.restore(snap, mount="/tmp")
+        assert self.vfs.read("/tmp/bin_test.dat") == bytes(range(256))
+        shutil.rmtree(os.path.dirname(snap))
+
 
 # ════════════════════════════════════════════════════════════════
 # DRIVERS

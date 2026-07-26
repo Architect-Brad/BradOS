@@ -7786,11 +7786,10 @@ class BradOSShell(App):
 
     def on_mount(self) -> None:
         init_dirs()
-        # Kernel is required for ProcFS + the Kernel task table. run_shell()
-        # always attaches one; constructing BradOSShell() directly also works.
         if self.kernel is None:
             self.kernel = BradOSKernel()
-        self.vfs      = create_default_vfs(kernel=self.kernel)
+        snapshot_path = os.path.join("brados_files", "root_snapshot.json")
+        self.vfs      = create_default_vfs(kernel=self.kernel, snapshot_path=snapshot_path)
         self.drivers  = create_default_registry(vfs=self.vfs)
         self.security = get_bradsec()
         self.security.start()
@@ -7844,6 +7843,15 @@ class BradOSShell(App):
             except Exception:
                 pass
         self.push_screen(SplashScreen())
+
+    def on_exit(self) -> None:
+        """Persist root filesystem snapshot on shutdown."""
+        if self.vfs:
+            try:
+                snapshot_path = os.path.join("brados_files", "root_snapshot.json")
+                self.vfs.snapshot(snapshot_path, mount="/")
+            except Exception:
+                pass
 
     def _wire_kernel(self) -> None:
         """Attach VFS / drivers / security / process manager to the kernel."""
