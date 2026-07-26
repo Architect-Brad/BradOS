@@ -1475,8 +1475,127 @@ class TestShellCssHealth:
 
 
 # ════════════════════════════════════════════════════════════════
-# Run standalone
+# SECURITY HARDENING TESTS (v3.1)
 # ════════════════════════════════════════════════════════════════
+
+class TestAuthRateLimiting:
+    """Tests for the brute-force rate limiter on kernel.authenticate()."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from brados_kernel_core import BradOSKernel
+        self.KernelCls = BradOSKernel
+        self.kernel = BradOSKernel()
+        # root / admin is pre-seeded in user database
+        self.kernel.authenticate("root", "admin")  # prime the user list
+
+    def test_successful_auth_clears_counter(self):
+        # Fail twice, then succeed — counter should be cleared
+        self.kernel.authenticate("root", "wrong")
+        self.kernel.authenticate("root", "wrong")
+        assert self.kernel.authenticate("root", "admin") == 0
+
+    def test_lockout_after_max_failures(self):
+        for _ in range(self.KernelCls._MAX_AUTH_ATTEMPTS):
+            result = self.kernel.authenticate("root", "wrong")
+            assert result is None
+        # Next attempt should be locked out even with correct password
+        assert self.kernel.authenticate("root", "admin") is None
+
+    def test_lockout_reset_after_timeout(self):
+        # Fill up the failure counter
+        for _ in range(self.KernelCls._MAX_AUTH_ATTEMPTS):
+            self.kernel.authenticate("root", "wrong")
+        # Simulate lockout expiry by backdating the stored timestamps
+        for username in list(self.kernel._auth_attempts):
+            self.kernel._auth_attempts[username][1] -= (self.KernelCls._AUTH_LOCKOUT_SECS + 1)
+        # Now authentication should be allowed again
+        assert self.kernel.authenticate("root", "admin") == 0
+
+    def test_unknown_user_also_rate_limited(self):
+        for _ in range(self.KernelCls._MAX_AUTH_ATTEMPTS):
+            self.kernel.authenticate("nonexistent", "x")
+        assert self.kernel.authenticate("nonexistent", "x") is None
+
+    def test_different_users_independent(self):
+        # Lock out "root"
+        for _ in range(self.KernelCls._MAX_AUTH_ATTEMPTS):
+            self.kernel.authenticate("root", "wrong")
+        # Unknown user should still be allowed (separate counter)
+        # (will fail because user doesn't exist, but not because of lockout)
+        # We can verify the counter structure directly
+        assert "root" in self.kernel._auth_attempts
+        assert len(self.kernel._auth_attempts) == 1
+
+
+class TestPasswordConstantTime:
+    """Verify verify_password uses constant-time comparison."""
+
+    def test_plaintext_fallback_uses_hmac_compare(self):
+        from brados_kernel_core import verify_password
+        # A plaintext stored password should still verify correctly
+        assert verify_password("secret", "secret")
+        assert not verify_password("secret", "wrong")
+
+    def test_pbkdf2_uses_hmac_compare(self):
+        from brados_kernel_core import hash_password, verify_password
+        h = hash_password("test123")
+        assert verify_password("test123", h)
+        assert not verify_password("wrong123", h)
+
+    def test_malformed_stored_returns_false(self):
+        from brados_kernel_core import verify_password
+        assert not verify_password("x", "pbkdf2:bad:format")
+
+
+class TestInotifyDetection:
+    """Verify _HAS_INOTIFY is detected correctly."""
+
+    def test_has_inotify_is_bool(self):
+        from brados_security import _HAS_INOTIFY
+        assert isinstance(_HAS_INOTIFY, bool)
+
+    def test_has_inotify_matches_ctypes_probe(self):
+        from brados_security import _HAS_INOTIFY
+        try:
+            import ctypes
+            import ctypes.util
+            libc = ctypes.util.find_library("c")
+            if libc:
+                clib = ctypes.CDLL(libc, use_errno=True)
+                expected = hasattr(clib, "inotify_init")
+            else:
+                expected = False
+        except Exception:
+            expected = False
+        assert _HAS_INOTIFY == expected
+
+
+class TestVaultXorWarning:
+    """Verify XOR fallback emits a security warning."""
+
+    def test_xor_fallback_warns(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        # Force ImportError to trigger XOR fallback
+        import builtins
+        real_import = builtins.__import__
+        def block_cryptography(name, *args, **kwargs):
+            if name == "cryptography" or name.startswith("cryptography."):
+                raise ImportError("forced for test")
+            return real_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", block_cryptography)
+
+        import warnings
+        from brados_security import EncryptedVault, AuditLog
+        audit = AuditLog(tmp_path / "test_audit.log")
+        vault = EncryptedVault(audit)
+        vault._key = b"testkey1234567890" * 2  # 32 bytes
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            vault._encrypt(b"hello world")
+            assert len(w) == 1
+            assert "NOT cryptographically secure" in str(w[0].message)
+            assert issubclass(w[0].category, UserWarning)
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

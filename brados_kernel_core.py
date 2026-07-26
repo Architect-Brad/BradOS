@@ -155,13 +155,18 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored: str) -> bool:
     if not stored.startswith("pbkdf2:"):
-        logger.warning("Plaintext password — rehash immediately")
-        return password == stored
+        logger.warning("Plaintext password detected — rehash immediately")
+        # Use constant-time comparison to prevent timing attacks on legacy
+        # plaintext passwords.  The caller should rehash after a successful
+        # verify (load_user_database already does this).
+        import hmac as _hmac
+        return _hmac.compare_digest(password.encode(), stored.encode())
     try:
         _, algo, salt_hex, key_hex = stored.split(":")
         salt = bytes.fromhex(salt_hex)
         key  = hashlib.pbkdf2_hmac(algo, password.encode(), salt, 260_000)
-        return key.hex() == key_hex
+        import hmac as _hmac
+        return _hmac.compare_digest(key.hex(), key_hex)
     except (ValueError, KeyError):
         return False
 
@@ -182,6 +187,10 @@ class BradOSKernel:
       self.drivers  — DriverRegistry
     """
 
+    # Rate limiting constants
+    _MAX_AUTH_ATTEMPTS  = 5          # max failed attempts before lockout
+    _AUTH_LOCKOUT_SECS  = 30.0       # lockout duration in seconds
+
     def __init__(self, user_profiles_dir: str = "user_profiles"):
         self.tasks             : deque[Process]  = deque()
         self.next_pid          : int             = 1
@@ -192,7 +201,10 @@ class BradOSKernel:
         self._pipes            : dict[str, queue.Queue] = {}
         self._shmem            : dict[str, Any]  = {}
         self._shutdown         : threading.Event = threading.Event()
-        self._lock             = threading.Lock()
+        self._lock             : threading.Lock  = threading.Lock()
+
+        # Rate limiting: {username: [fail_count, first_fail_time]}
+        self._auth_attempts    : dict[str, list] = {}
 
         # Subsystems attached by the shell/boot code
         self.vfs               = None   # VirtualFileSystem | None
@@ -249,16 +261,51 @@ class BradOSKernel:
         os.replace(tmp, path)
 
     def authenticate(self, username: str, password: str) -> int | None:
+        now = time.monotonic()
+
+        # Rate limiting: check lockout
+        if username in self._auth_attempts:
+            fails, first_fail = self._auth_attempts[username]
+            if fails >= self._MAX_AUTH_ATTEMPTS:
+                elapsed = now - first_fail
+                if elapsed < self._AUTH_LOCKOUT_SECS:
+                    remaining = int(self._AUTH_LOCKOUT_SECS - elapsed)
+                    logger.warning(
+                        f"Auth LOCKED-OUT: {username} "
+                        f"({fails} failures, {remaining}s remaining)"
+                    )
+                    return None
+                # Lockout expired — reset
+                self._auth_attempts.pop(username, None)
+
         for uid, info in self.users.items():
             if info["name"] == username:
                 if verify_password(password, info.get("password", "")):
+                    # Success — clear rate limit counter
+                    self._auth_attempts.pop(username, None)
                     self.current_user = uid
                     logger.info(f"Auth OK: {username} (uid={uid})")
                     return uid
+                # Failure — track it
+                self._track_auth_failure(username)
                 logger.warning(f"Auth FAIL (bad password): {username}")
                 return None
+        # Unknown user — track it under the attempted name
+        self._track_auth_failure(username)
         logger.warning(f"Auth FAIL (unknown user): {username}")
         return None
+
+    def _track_auth_failure(self, username: str) -> None:
+        now = time.monotonic()
+        if username not in self._auth_attempts:
+            self._auth_attempts[username] = [1, now]
+        else:
+            fails, first_fail = self._auth_attempts[username]
+            # Reset window if lockout period has passed
+            if now - first_fail >= self._AUTH_LOCKOUT_SECS:
+                self._auth_attempts[username] = [1, now]
+            else:
+                self._auth_attempts[username] = [fails + 1, first_fail]
 
     def check_permission(self, uid: int, required: Perm) -> bool:
         if uid == 0: return True

@@ -489,7 +489,18 @@ class EncryptedVault:
             fernet_key = base64.urlsafe_b64encode(self._key)
             return Fernet(fernet_key).encrypt(data)
         except ImportError:
-            # XOR obfuscation fallback — NOT cryptographically secure
+            import warnings as _w
+            _w.warn(
+                "cryptography not installed — vault is using XOR obfuscation "
+                "(NOT cryptographically secure).  Install 'cryptography' for "
+                "AES-based encryption.",
+                UserWarning, stacklevel=2,
+            )
+            self._audit.write(
+                "ALERT", "VAULT",
+                "XOR fallback — vault is NOT cryptographically secure. "
+                "Install 'cryptography' package.",
+            )
             key_stream = (self._key * ((len(data) // len(self._key)) + 1))[:len(data)]
             return bytes(a ^ b for a, b in zip(data, key_stream))
 
@@ -501,6 +512,13 @@ class EncryptedVault:
             payload = Fernet(fernet_key).decrypt(data)
             return json.loads(payload)
         except ImportError:
+            import warnings as _w
+            _w.warn(
+                "cryptography not installed — vault is using XOR obfuscation "
+                "(NOT cryptographically secure).  Install 'cryptography' for "
+                "AES-based encryption.",
+                UserWarning, stacklevel=2,
+            )
             key_stream = (self._key * ((len(data) // len(self._key)) + 1))[:len(data)]
             payload = bytes(a ^ b for a, b in zip(data, key_stream))
             return json.loads(payload)
@@ -943,7 +961,17 @@ class PolicyEngine:
 # FILE WATCHER — inotify via ctypes (Linux) with polling fallback
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_HAS_INOTIFY = hasattr(os, "inotify") or hasattr(os, "inotify_add_watch")
+_HAS_INOTIFY = False
+try:
+    import ctypes
+    import ctypes.util as _cutil
+    _libc = _cutil.find_library("c")
+    if _libc:
+        _clib = ctypes.CDLL(_libc, use_errno=True)
+        _HAS_INOTIFY = hasattr(_clib, "inotify_init")
+    del _clib, _cutil, _libc
+except Exception:
+    pass
 
 
 class FileWatcher:
@@ -981,6 +1009,9 @@ class FileWatcher:
             self._thread.join(timeout=2)
 
     def _run(self) -> None:
+        if not _HAS_INOTIFY:
+            self._polling_loop()
+            return
         try:
             self._inotify_loop()
         except Exception:
