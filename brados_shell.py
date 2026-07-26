@@ -7837,6 +7837,7 @@ class BradOSShell(App):
             self._on_file_received, msg, addr
         ))
         self.packages = get_bpkg()
+        self.packages.set_sec(DEMO_SESSION_PID, self.security)
         for path in ["/home", "/tmp"]:
             try:
                 self.vfs.makedirs(path)

@@ -50,11 +50,12 @@ class Cap(IntFlag):
     AUDIT_READ = 1 << 6   # read audit log
     VAULT_READ = 1 << 7   # read encrypted vault
     VAULT_WRITE= 1 << 8   # write encrypted vault
+    PKG_INSTALL= 1 << 9   # install / remove packages via bpkg
     ADMIN      = 1 << 15  # all caps (root equivalent)
 
     @classmethod
     def default_user(cls) -> "Cap":
-        return cls.FS_READ | cls.FS_WRITE | cls.NET_SEND | cls.PROC_FORK
+        return cls.FS_READ | cls.FS_WRITE | cls.NET_SEND | cls.PROC_FORK | cls.PKG_INSTALL
 
     @classmethod
     def default_guest(cls) -> "Cap":

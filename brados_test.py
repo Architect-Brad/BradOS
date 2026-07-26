@@ -965,6 +965,48 @@ class TestBpkg:
         status = self.mgr.pip_status()
         assert isinstance(status, dict)
 
+    def test_pkg_install_cap_required(self):
+        from unittest.mock import patch
+        from brados_security import BradSec, Cap
+        sec = BradSec()
+        sec.start()
+        # Issue a token WITHOUT PKG_INSTALL
+        sec.issue_token(pid=7777, uid=1000,
+                        caps=Cap.FS_READ | Cap.FS_WRITE)
+        self.mgr.set_sec(7777, sec)
+        with patch("brados_bpkg.PypiHelper.install", return_value=True):
+            with pytest.raises(PermissionError, match="PKG_INSTALL"):
+                self.mgr.install("brad-psutil")
+
+    def test_pkg_install_cap_allows_install(self):
+        from unittest.mock import patch
+        from brados_security import BradSec, Cap
+        sec = BradSec()
+        sec.start()
+        sec.issue_token(pid=7778, uid=1000,
+                        caps=Cap.FS_READ | Cap.FS_WRITE | Cap.PKG_INSTALL)
+        self.mgr.set_sec(7778, sec)
+        with patch("brados_bpkg.PypiHelper.install", return_value=True):
+            result = self.mgr.install("brad-psutil")
+        assert result.success
+
+    def test_pkg_install_cap_required_for_remove(self):
+        from unittest.mock import patch
+        from brados_security import BradSec, Cap
+        sec = BradSec()
+        sec.start()
+        sec.issue_token(pid=7779, uid=1000, caps=Cap.FS_READ)
+        self.mgr.set_sec(7779, sec)
+        with pytest.raises(PermissionError, match="PKG_INSTALL"):
+            self.mgr.remove("brad-psutil")
+
+    def test_no_sec_allows_all(self):
+        from unittest.mock import patch
+        # No set_sec() called — standalone mode, no cap checks
+        with patch("brados_bpkg.PypiHelper.install", return_value=True):
+            result = self.mgr.install("brad-psutil")
+        assert result.success
+
 
 # ════════════════════════════════════════════════════════════════
 # ASYNC WORKERS

@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [3.1.1] - 2026-07-26
 
 ### Added
+- **PKG_INSTALL capability** (`Cap.PKG_INSTALL`, bit 9): `bpkg install` and `bpkg remove` now require this capability when BradSec is attached. Included in `default_user()`, excluded from `default_guest()`.
+- `BpkgManager.set_sec(pid, sec)` wires capability gate; standalone mode (no sec) allows all operations.
+- Remote package registry at [Architect-Brad/registry](https://github.com/Architect-Brad/registry) with `index.json`, contribution guide, and trust model docs.
 - **VFS persistence**: `MemFSDriver.snapshot(path)` / `restore(path)` serialize the in-memory tree to JSON (with base64 for binary data). Root `/` snapshot auto-saved on shutdown and restored on boot via `BradOSShell.on_exit` / `on_mount`.
 - `VirtualFileSystem.snapshot(path, mount)` / `restore(path, mount)` convenience methods.
 - `create_default_vfs(..., snapshot_path=)` parameter for snapshot restore on boot.

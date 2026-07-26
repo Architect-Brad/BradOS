@@ -391,22 +391,45 @@ class InstallResult:
 
 
 class BpkgManager:
-    """Top-level package manager.  Used by the shell and classic CLI."""
+    """Top-level package manager.  Used by the shell and classic CLI.
+
+    Optional capability gate: call set_sec(pid, sec) with a BradSec instance
+    and process PID to require PKG_INSTALL before install/remove operations.
+    If not set, all operations are allowed (standalone CLI mode).
+    """
 
     def __init__(self):
         self.registry = PackageRegistry()
         self.db       = PackageDB()
         self._pip     = PypiHelper()
+        self._sec     = None   # BradSec instance (optional)
+        self._pid     = None   # process PID for capability checks
+
+    def set_sec(self, pid: int, sec) -> None:
+        """Attach BradSec for capability-gated operations."""
+        self._pid = pid
+        self._sec = sec
+
+    def _require_pkg_cap(self) -> None:
+        """Raise PermissionError if PKG_INSTALL capability is missing."""
+        if self._sec is None or self._pid is None:
+            return
+        from brados_security import Cap
+        if not self._sec.check_cap(self._pid, Cap.PKG_INSTALL):
+            raise PermissionError(
+                "capability denied: PKG_INSTALL required to manage packages"
+            )
 
     # ── Core operations ────────────────────────────────────────────────────
 
     def install(self, name: str,
                 progress: Callable[[str], None] | None = None,
                 allow_unverified_scripts: bool = False) -> InstallResult:
-        """Install a package. If the package's install_script did not ship
-        with the trusted (builtin) registry and its script_sha256 doesn't
-        match, the script is skipped unless allow_unverified_scripts=True is
-        explicitly passed by the caller (e.g. after prompting the user)."""
+        """Install a package. Requires PKG_INSTALL capability if BradSec is attached.
+        If the package's install_script did not ship with the trusted (builtin)
+        registry and its script_sha256 doesn't match, the script is skipped
+        unless allow_unverified_scripts=True is explicitly passed."""
+        self._require_pkg_cap()
         t0   = time.monotonic()
         msgs : list[str] = []
 
@@ -469,6 +492,7 @@ class BpkgManager:
 
     def remove(self, name: str,
                progress: Callable[[str], None] | None = None) -> InstallResult:
+        self._require_pkg_cap()
         t0   = time.monotonic()
         msgs : list[str] = []
 
